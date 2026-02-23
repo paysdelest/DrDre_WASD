@@ -1,0 +1,924 @@
+// app.cpp
+#ifndef _WIN32_IE
+#define _WIN32_IE 0x0600
+#endif
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <dbt.h>
+#include <commctrl.h>
+#include <shellapi.h>
+#include <urlmon.h>
+#include <winhttp.h>
+
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <cstdint>
+#include <atomic>
+#include <filesystem>
+#include <regex>
+#include <cwctype>
+#include <limits>
+
+#include "app.h"
+#include "Resource.h"
+#include "backend.h"
+#include "bindings.h"
+#include "keyboard_ui.h"
+#include "settings.h"
+#include "settings_ini.h"
+#include "macro_editor.h"
+#include "HallJoy_Bind_Macro.h"
+#include "realtime_loop.h"
+#include "win_util.h"
+#include "app_paths.h"
+#include "ui_theme.h"
+#include "macro_system.h"
+#include "mouse_combo_system.h"
+#include "Logger.h"
+
+// shared ignore window used by macro senders to prevent retrigger loops
+extern std::atomic<unsigned long long> s_ignoreKeyEventsUntilMs;
+
+#pragma comment(lib, "Comctl32.lib")
+#pragma comment(lib, "Urlmon.lib")
+#pragma comment(lib, "Winhttp.lib")
+
+static constexpr UINT WM_APP_REQUEST_SAVE = WM_APP + 1;
+static constexpr UINT WM_APP_APPLY_TIMING = WM_APP + 2;
+static constexpr UINT WM_APP_KEYBOARD_LAYOUT_CHANGED = WM_APP + 260;
+
+static const UINT_PTR UI_TIMER_ID = 2;
+static const UINT_PTR SETTINGS_SAVE_TIMER_ID = 3;
+static const UINT SETTINGS_SAVE_TIMER_MS = 350;
+
+static HWND g_hPageMain = nullptr;
+static HHOOK g_hKeyboardHook = nullptr;
+static HHOOK g_hMouseHook = nullptr;
+
+static bool IsWindowRectVisibleOnAnyScreen(int x, int y, int w, int h)
+{
+    RECT r{ x, y, x + w, y + h };
+    RECT vr{};
+    vr.left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    vr.top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    vr.right = vr.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    vr.bottom = vr.top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    RECT inter{};
+    return IntersectRect(&inter, &r, &vr) != FALSE;
+}
+
+static std::wstring Utf8ToWide(const std::string& s)
+{
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring out((size_t)n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), out.data(), n);
+    return out;
+}
+
+static std::string WideToUtf8(const std::wstring& s)
+{
+    if (s.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+static std::wstring ToLowerCopy(std::wstring s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return (wchar_t)towlower(c); });
+    return s;
+}
+
+static bool EndsWithNoCase(const std::wstring& s, const std::wstring& suffix)
+{
+    if (suffix.size() > s.size()) return false;
+    std::wstring ls = ToLowerCopy(s);
+    std::wstring lf = ToLowerCopy(suffix);
+    return ls.compare(ls.size() - lf.size(), lf.size(), lf) == 0;
+}
+
+static std::wstring FileNameFromUrl(const std::wstring& url)
+{
+    size_t slash = url.find_last_of(L'/');
+    size_t start = (slash == std::wstring::npos) ? 0 : (slash + 1);
+    size_t end = url.find_first_of(L"?#", start);
+    if (end == std::wstring::npos) end = url.size();
+    if (start >= end) return L"download.bin";
+    return url.substr(start, end - start);
+}
+
+static std::wstring JsonUnescapeBasic(std::wstring s)
+{
+    size_t p = 0;
+    while ((p = s.find(L"\\/", p)) != std::wstring::npos) { s.replace(p, 2, L"/"); }
+    p = 0;
+    while ((p = s.find(L"\\u0026", p)) != std::wstring::npos) { s.replace(p, 6, L"&"); }
+    p = 0;
+    while ((p = s.find(L"\\u003d", p)) != std::wstring::npos) { s.replace(p, 6, L"="); }
+    return s;
+}
+
+static bool HttpGetUtf8(const std::wstring& url, std::string& outBody)
+{
+    outBody.clear();
+    URL_COMPONENTSW uc{};
+    uc.dwStructSize = sizeof(uc);
+    uc.dwSchemeLength = (DWORD)-1;
+    uc.dwHostNameLength = (DWORD)-1;
+    uc.dwUrlPathLength = (DWORD)-1;
+    uc.dwExtraInfoLength = (DWORD)-1;
+    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) return false;
+
+    std::wstring host(uc.lpszHostName, uc.dwHostNameLength);
+    std::wstring path = (uc.dwUrlPathLength > 0) ? std::wstring(uc.lpszUrlPath, uc.dwUrlPathLength) : L"/";
+    if (uc.dwExtraInfoLength > 0) path.append(uc.lpszExtraInfo, uc.dwExtraInfoLength);
+
+    HINTERNET hSession = WinHttpOpen(L"HallJoy/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return false;
+    HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), uc.nPort, 0);
+    if (!hConnect) { WinHttpCloseHandle(hSession); return false; }
+    DWORD flags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET hReq = WinHttpOpenRequest(hConnect, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+    if (!hReq) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return false; }
+
+    const wchar_t* headers = L"User-Agent: HallJoy\r\nAccept: application/vnd.github+json\r\n";
+    bool ok = WinHttpSendRequest(hReq, headers, (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) != FALSE;
+    if (ok) ok = WinHttpReceiveResponse(hReq, nullptr) != FALSE;
+    DWORD statusCode = 0, statusSize = sizeof(statusCode);
+    if (ok)
+        ok = WinHttpQueryHeaders(hReq, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX) != FALSE;
+    if (ok && statusCode >= 400) ok = false;
+
+    while (ok)
+    {
+        DWORD avail = 0;
+        if (!WinHttpQueryDataAvailable(hReq, &avail)) { ok = false; break; }
+        if (avail == 0) break;
+        size_t oldSize = outBody.size();
+        outBody.resize(oldSize + (size_t)avail);
+        DWORD got = 0;
+        if (!WinHttpReadData(hReq, outBody.data() + oldSize, avail, &got)) { ok = false; break; }
+        outBody.resize(oldSize + (size_t)got);
+    }
+    WinHttpCloseHandle(hReq);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    return ok;
+}
+
+static std::vector<std::wstring> ExtractBrowserDownloadUrls(const std::string& jsonUtf8)
+{
+    std::vector<std::wstring> out;
+    static const std::regex re("\"browser_download_url\"\\s*:\\s*\"([^\"]+)\"");
+    std::sregex_iterator it(jsonUtf8.begin(), jsonUtf8.end(), re), end;
+    for (; it != end; ++it)
+    {
+        std::wstring url = Utf8ToWide((*it)[1].str());
+        if (!url.empty()) out.push_back(JsonUnescapeBasic(url));
+    }
+    return out;
+}
+
+static bool ContainsAllTokens(const std::wstring& lowerText, const std::vector<std::wstring>& tokens)
+{
+    for (const auto& t : tokens)
+        if (!t.empty() && lowerText.find(ToLowerCopy(t)) == std::wstring::npos) return false;
+    return true;
+}
+
+static int ScoreAssetName(const std::wstring& lowerName, const std::vector<std::wstring>& preferredTokens)
+{
+    int score = 0;
+    for (const auto& t : preferredTokens)
+        if (!t.empty() && lowerName.find(ToLowerCopy(t)) != std::wstring::npos) score += 4;
+    if (EndsWithNoCase(lowerName, L".exe")) score += 2;
+    if (EndsWithNoCase(lowerName, L".msi")) score += 1;
+    return score;
+}
+
+static std::wstring SelectBestAssetUrl(const std::vector<std::wstring>& urls, const std::vector<std::wstring>& requiredTokens, const std::vector<std::wstring>& preferredTokens, const std::vector<std::wstring>& allowedExtensions)
+{
+    int bestScore = -1;
+    std::wstring best;
+    for (const auto& url : urls)
+    {
+        std::wstring name = ToLowerCopy(FileNameFromUrl(url));
+        bool extOk = allowedExtensions.empty();
+        for (const auto& ext : allowedExtensions) if (EndsWithNoCase(name, ext)) { extOk = true; break; }
+        if (!extOk) continue;
+        if (!ContainsAllTokens(name, requiredTokens)) continue;
+        int score = ScoreAssetName(name, preferredTokens);
+        if (score > bestScore) { bestScore = score; best = url; }
+    }
+    if (!best.empty()) return best;
+    for (const auto& url : urls)
+    {
+        std::wstring name = ToLowerCopy(FileNameFromUrl(url));
+        for (const auto& ext : allowedExtensions) if (EndsWithNoCase(name, ext)) return url;
+    }
+    return {};
+}
+
+static bool ResolveLatestAssetUrl(const std::vector<std::wstring>& apiUrls, const std::vector<std::wstring>& requiredTokens, const std::vector<std::wstring>& preferredTokens, const std::vector<std::wstring>& allowedExtensions, std::wstring& outUrl)
+{
+    outUrl.clear();
+    for (const auto& api : apiUrls)
+    {
+        std::string body;
+        if (!HttpGetUtf8(api, body)) continue;
+        auto urls = ExtractBrowserDownloadUrls(body);
+        if (urls.empty()) continue;
+        std::wstring pick = SelectBestAssetUrl(urls, requiredTokens, preferredTokens, allowedExtensions);
+        if (!pick.empty()) { outUrl = pick; return true; }
+    }
+    return false;
+}
+
+static std::wstring BuildTempInstallerPath(const std::wstring& fileName)
+{
+    namespace fs = std::filesystem;
+    try
+    {
+        fs::path dir = fs::temp_directory_path() / L"HallJoy" / L"deps";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        fs::path p = dir / (fileName.empty() ? L"download.bin" : fileName);
+        return p.wstring();
+    }
+    catch (...)
+    {
+        wchar_t tmp[MAX_PATH]{};
+        DWORD n = GetTempPathW((DWORD)_countof(tmp), tmp);
+        std::wstring base = (n > 0 && n < _countof(tmp)) ? std::wstring(tmp) : L".\\";
+        if (!base.empty() && base.back() != L'\\' && base.back() != L'/') base.push_back(L'\\');
+        return base + (fileName.empty() ? L"download.bin" : fileName);
+    }
+}
+
+static bool DownloadUrlToFilePath(const std::wstring& url, const std::wstring& filePath)
+{
+    HRESULT hr = URLDownloadToFileW(nullptr, url.c_str(), filePath.c_str(), 0, nullptr);
+    return SUCCEEDED(hr);
+}
+
+static bool DownloadLatestAssetToTemp(const std::vector<std::wstring>& apiUrls, const std::vector<std::wstring>& requiredTokens, const std::vector<std::wstring>& preferredTokens, const std::vector<std::wstring>& allowedExtensions, std::wstring& outFilePath)
+{
+    outFilePath.clear();
+    std::wstring assetUrl;
+    if (!ResolveLatestAssetUrl(apiUrls, requiredTokens, preferredTokens, allowedExtensions, assetUrl)) return false;
+    std::wstring fileName = FileNameFromUrl(assetUrl);
+    std::wstring dst = BuildTempInstallerPath(fileName);
+    if (!DownloadUrlToFilePath(assetUrl, dst)) return false;
+    outFilePath = dst;
+    return true;
+}
+
+static std::wstring QuoteForCmdArg(const std::wstring& s)
+{
+    std::wstring out = L"\"";
+    for (wchar_t c : s) { if (c == L'"') out += L"\\\""; else out += c; }
+    out += L"\"";
+    return out;
+}
+
+static bool RunCommandElevatedAndWait(HWND hwnd, const std::wstring& file, const std::wstring& params)
+{
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.hwnd = hwnd;
+    sei.lpVerb = L"runas";
+    sei.lpFile = file.c_str();
+    sei.lpParameters = params.empty() ? nullptr : params.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei)) return false;
+    if (sei.hProcess)
+    {
+        WaitForSingleObject(sei.hProcess, INFINITE);
+        DWORD code = 1;
+        GetExitCodeProcess(sei.hProcess, &code);
+        CloseHandle(sei.hProcess);
+        return (code == 0 || code == 3010 || code == 1641);
+    }
+    return true;
+}
+
+static bool RunInstallerElevatedAndWait(HWND hwnd, const std::wstring& installerPath)
+{
+    if (EndsWithNoCase(installerPath, L".msi"))
+    {
+        std::wstring params = L"/i " + QuoteForCmdArg(installerPath);
+        return RunCommandElevatedAndWait(hwnd, L"msiexec.exe", params);
+    }
+    return RunCommandElevatedAndWait(hwnd, installerPath, L"");
+}
+
+static std::wstring QuoteForPowerShellSingle(const std::wstring& s)
+{
+    std::wstring out = L"'";
+    for (wchar_t c : s) { if (c == L'\'') out += L"''"; else out += c; }
+    out += L"'";
+    return out;
+}
+
+static bool WriteTextFileUtf8(const std::wstring& path, const std::wstring& text)
+{
+    std::string utf8 = WideToUtf8(text);
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    bool ok = WriteFile(h, utf8.data(), (DWORD)utf8.size(), &written, nullptr) != FALSE;
+    CloseHandle(h);
+    return ok && written == (DWORD)utf8.size();
+}
+
+static bool RunPowerShellScriptElevatedAndWait(HWND hwnd, const std::wstring& scriptText)
+{
+    std::wstring scriptPath = BuildTempInstallerPath(L"halljoy_install_uap.ps1");
+    if (!WriteTextFileUtf8(scriptPath, scriptText)) return false;
+    std::wstring params = L"-NoProfile -ExecutionPolicy Bypass -File " + QuoteForCmdArg(scriptPath);
+    return RunCommandElevatedAndWait(hwnd, L"powershell.exe", params);
+}
+
+static bool InstallUniversalAnalogPluginFromZip(HWND hwnd, const std::wstring& zipPath)
+{
+    std::wstring extractDir = BuildTempInstallerPath(L"uap_extract");
+    std::wstring dstDir = L"C:\\Program Files\\WootingAnalogPlugins";
+    std::wstring script;
+    script += L"$ErrorActionPreference='Stop'\n";
+    script += L"$zip=" + QuoteForPowerShellSingle(zipPath) + L"\n";
+    script += L"$extract=" + QuoteForPowerShellSingle(extractDir) + L"\n";
+    script += L"$dst=" + QuoteForPowerShellSingle(dstDir) + L"\n";
+    script += L"if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }\n";
+    script += L"Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force\n";
+    script += L"$src = Join-Path $extract 'universal-analog-plugin'\n";
+    script += L"if (!(Test-Path -LiteralPath $src)) { throw 'universal-analog-plugin folder not found in Windows.zip' }\n";
+    script += L"New-Item -ItemType Directory -Path $dst -Force | Out-Null\n";
+    script += L"Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force\n";
+    return RunPowerShellScriptElevatedAndWait(hwnd, script);
+}
+
+static std::wstring BuildIssuesText(uint32_t issues)
+{
+    std::wstring t;
+    if (issues & BackendInitIssue_VigemBusMissing)     t += L"- ViGEm Bus is missing.\n";
+    if (issues & BackendInitIssue_WootingSdkMissing)   t += L"- Wooting Analog SDK is missing.\n";
+    if (issues & BackendInitIssue_WootingIncompatible) t += L"- Wooting Analog SDK version is incompatible.\n";
+    if (issues & BackendInitIssue_WootingNoPlugins)    t += L"- No Wooting analog plugins are installed.\n";
+    if (issues & BackendInitIssue_Unknown)             t += L"- Unknown backend initialization issue.\n";
+    if (t.empty()) t = L"- Unknown backend initialization issue.\n";
+    return t;
+}
+
+enum class DependencyInstallResult { Skipped = 0, Installed = 1, Failed = 2 };
+
+static DependencyInstallResult TryInstallMissingDependencies(HWND hwnd, uint32_t issues)
+{
+    const bool needVigem      = (issues & BackendInitIssue_VigemBusMissing) != 0;
+    const bool needWootingSdk = (issues & (BackendInitIssue_WootingSdkMissing | BackendInitIssue_WootingIncompatible | BackendInitIssue_WootingNoPlugins)) != 0;
+    const bool suggestUap     = (issues & (BackendInitIssue_WootingSdkMissing | BackendInitIssue_WootingIncompatible | BackendInitIssue_WootingNoPlugins)) != 0;
+    if (!needVigem && !needWootingSdk) return DependencyInstallResult::Skipped;
+
+    std::wstring prompt = L"Missing dependencies detected:\n\n";
+    prompt += BuildIssuesText(issues);
+    prompt += L"\nDownload and run the latest installers from GitHub now?";
+    if (MessageBoxW(hwnd, prompt.c_str(), L"HallJoy", MB_ICONQUESTION | MB_YESNO) != IDYES)
+        return DependencyInstallResult::Skipped;
+
+    if (needVigem)
+    {
+        std::wstring installerPath;
+        if (!DownloadLatestAssetToTemp({ L"https://api.github.com/repos/ViGEm/ViGEmBus/releases/latest", L"https://api.github.com/repos/nefarius/ViGEmBus/releases/latest" }, { L"vigem", L"bus" }, { L"x64", L"setup", L"installer" }, { L".exe", L".msi" }, installerPath))
+        { MessageBoxW(hwnd, L"Failed to download latest ViGEm Bus installer from GitHub.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed; }
+        if (!RunInstallerElevatedAndWait(hwnd, installerPath))
+        { MessageBoxW(hwnd, L"ViGEm Bus installation did not complete successfully.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed; }
+    }
+
+    if (needWootingSdk)
+    {
+        std::wstring installerPath;
+        if (!DownloadLatestAssetToTemp({ L"https://api.github.com/repos/WootingKb/wooting-analog-sdk/releases/latest" }, { L"wooting", L"analog", L"sdk" }, { L"x86_64", L"windows", L"msi" }, { L".msi", L".exe" }, installerPath))
+        { MessageBoxW(hwnd, L"Failed to download latest Wooting Analog SDK installer from GitHub.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed; }
+        if (!RunInstallerElevatedAndWait(hwnd, installerPath))
+        { MessageBoxW(hwnd, L"Wooting Analog SDK installation did not complete successfully.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed; }
+    }
+
+    if (suggestUap)
+    {
+        if (MessageBoxW(hwnd, L"Install optional Universal Analog Plugin for broader HE keyboard support?", L"HallJoy", MB_ICONQUESTION | MB_YESNO) == IDYES)
+        {
+            std::wstring zipPath;
+            if (!DownloadLatestAssetToTemp({ L"https://api.github.com/repos/AnalogSense/universal-analog-plugin/releases/latest" }, { L"windows" }, { L"windows", L"zip" }, { L".zip" }, zipPath))
+                MessageBoxW(hwnd, L"Failed to download Universal Analog Plugin (Windows.zip).", L"HallJoy", MB_ICONWARNING);
+            else if (!InstallUniversalAnalogPluginFromZip(hwnd, zipPath))
+                MessageBoxW(hwnd, L"Universal Analog Plugin installation failed. You can install it manually later.", L"HallJoy", MB_ICONWARNING);
+        }
+    }
+    return DependencyInstallResult::Installed;
+}
+
+static bool RelaunchSelf()
+{
+    wchar_t exePath[MAX_PATH]{};
+    DWORD n = GetModuleFileNameW(nullptr, exePath, (DWORD)_countof(exePath));
+    if (n == 0 || n >= _countof(exePath)) return false;
+    std::wstring workDir(exePath);
+    size_t slash = workDir.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) workDir.resize(slash);
+    std::wstring cmdLine = L"\""; cmdLine += exePath; cmdLine += L"\"";
+    std::vector<wchar_t> mutableCmd(cmdLine.begin(), cmdLine.end());
+    mutableCmd.push_back(L'\0');
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(exePath, mutableCmd.data(), nullptr, nullptr, FALSE, 0, nullptr, workDir.empty() ? nullptr : workDir.c_str(), &si, &pi))
+    { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return true; }
+    HINSTANCE h = ShellExecuteW(nullptr, L"open", exePath, nullptr, workDir.empty() ? nullptr : workDir.c_str(), SW_SHOWNORMAL);
+    return ((INT_PTR)h > 32);
+}
+
+static bool IsOwnForegroundWindow()
+{
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    HWND root = GetAncestor(fg, GA_ROOT);
+    if (!root) root = fg;
+    wchar_t cls[128]{};
+    GetClassNameW(root, cls, (int)_countof(cls));
+    return (_wcsicmp(cls, L"WootingVigemGui") == 0 || _wcsicmp(cls, L"KeyboardLayoutEditorHost") == 0);
+}
+
+uint16_t HidFromKeyboardScanCode(DWORD scanCode, bool extended, DWORD vkCode)
+{
+    switch (scanCode & 0xFFu)
+    {
+    case 0x01: return 41; case 0x02: return 30; case 0x03: return 31; case 0x04: return 32;
+    case 0x05: return 33; case 0x06: return 34; case 0x07: return 35; case 0x08: return 36;
+    case 0x09: return 37; case 0x0A: return 38; case 0x0B: return 39; case 0x0C: return 45;
+    case 0x0D: return 46; case 0x0E: return 42; case 0x0F: return 43; case 0x10: return 20;
+    case 0x11: return 26; case 0x12: return 8;  case 0x13: return 21; case 0x14: return 23;
+    case 0x15: return 28; case 0x16: return 24; case 0x17: return 12; case 0x18: return 18;
+    case 0x19: return 19; case 0x1A: return 47; case 0x1B: return 48;
+    case 0x1C: return extended ? 88 : 40;
+    case 0x1D: return extended ? 228 : 224;
+    case 0x1E: return 4;  case 0x1F: return 22; case 0x20: return 7;  case 0x21: return 9;
+    case 0x22: return 10; case 0x23: return 11; case 0x24: return 13; case 0x25: return 14;
+    case 0x26: return 15; case 0x27: return 51; case 0x28: return 52; case 0x29: return 53;
+    case 0x2A: return 225; case 0x2B: return 49; case 0x2C: return 29; case 0x2D: return 27;
+    case 0x2E: return 6;  case 0x2F: return 25; case 0x30: return 5;  case 0x31: return 17;
+    case 0x32: return 16; case 0x33: return 54; case 0x34: return 55;
+    case 0x35: return extended ? 84 : 56;
+    case 0x36: return 229;
+    case 0x37: return extended ? 70 : 85;
+    case 0x38: return extended ? 230 : 226;
+    case 0x39: return 44; case 0x3A: return 57; case 0x3B: return 58; case 0x3C: return 59;
+    case 0x3D: return 60; case 0x3E: return 61; case 0x3F: return 62; case 0x40: return 63;
+    case 0x41: return 64; case 0x42: return 65; case 0x43: return 66; case 0x44: return 67;
+    case 0x45: return 83; case 0x46: return 71;
+    case 0x47: return extended ? 74 : 95;
+    case 0x48: return extended ? 82 : 96;
+    case 0x49: return extended ? 75 : 97;
+    case 0x4A: return 86;
+    case 0x4B: return extended ? 80 : 92;
+    case 0x4C: return 93;
+    case 0x4D: return extended ? 79 : 94;
+    case 0x4E: return 87;
+    case 0x4F: return extended ? 77 : 89;
+    case 0x50: return extended ? 81 : 90;
+    case 0x51: return extended ? 78 : 91;
+    case 0x52: return extended ? 73 : 98;
+    case 0x53: return extended ? 76 : 99;
+    case 0x57: return 68; case 0x58: return 69;
+    case 0x5B: return 227; case 0x5C: return 231; case 0x5D: return 101;
+    default: break;
+    }
+    switch (vkCode)
+    {
+    case 'A': return 4; case 'B': return 5; case 'C': return 6; case 'D': return 7; case 'E': return 8;
+    case 'F': return 9; case 'G': return 10; case 'H': return 11; case 'I': return 12; case 'J': return 13;
+    case 'K': return 14; case 'L': return 15; case 'M': return 16; case 'N': return 17; case 'O': return 18;
+    case 'P': return 19; case 'Q': return 20; case 'R': return 21; case 'S': return 22; case 'T': return 23;
+    case 'U': return 24; case 'V': return 25; case 'W': return 26; case 'X': return 27; case 'Y': return 28;
+    case 'Z': return 29;
+    case '1': return 30; case '2': return 31; case '3': return 32; case '4': return 33; case '5': return 34;
+    case '6': return 35; case '7': return 36; case '8': return 37; case '9': return 38; case '0': return 39;
+    case VK_SPACE: return 44; case VK_TAB: return 43;
+    case VK_RETURN: return extended ? 88 : 40;
+    case VK_BACK: return 42; case VK_ESCAPE: return 41;
+    case VK_LEFT: return 80; case VK_RIGHT: return 79; case VK_UP: return 82; case VK_DOWN: return 81;
+    case VK_HOME: return 74; case VK_END: return 77; case VK_PRIOR: return 75; case VK_NEXT: return 78;
+    case VK_INSERT: return 73; case VK_DELETE: return 76;
+    default: return 0;
+    }
+}
+
+static LRESULT CALLBACK KeyboardBlockHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION && lParam)
+    {
+        static bool g_hookKeyDown[256] = { 0 };
+
+        // Logs uniquement si recording/binding actif - pas de flood en jeu normal
+        if (MacroSystem::IsRecording())
+        {
+            if (wParam == WM_KEYDOWN || wParam == WM_KEYUP || wParam == WM_SYSKEYDOWN || wParam == WM_SYSKEYUP)
+            {
+                Logger::Info("HOOK_KB", "Avant MacroSystem::ProcessKeyboardInput");
+                MacroSystem::ProcessKeyboardInput((UINT)wParam, wParam, lParam);
+                Logger::Info("HOOK_KB", "MacroSystem::ProcessKeyboardInput OK");
+            }
+        }
+
+        if (HallJoy_Bind_Macro::IsRecording() || HallJoy_Bind_Macro::IsDirectBindingEnabled())
+        {
+            if (wParam == WM_KEYDOWN || wParam == WM_KEYUP || wParam == WM_SYSKEYDOWN || wParam == WM_SYSKEYUP)
+            {
+                Logger::Info("HOOK_KB", "Avant HallJoy_Bind_Macro::ProcessKeyboardInput");
+                HallJoy_Bind_Macro::ProcessKeyboardInput((UINT)wParam, wParam, lParam);
+                Logger::Info("HOOK_KB", "HallJoy_Bind_Macro::ProcessKeyboardInput OK");
+            }
+        }
+
+        if (wParam == WM_KEYDOWN || wParam == WM_KEYUP || wParam == WM_SYSKEYDOWN || wParam == WM_SYSKEYUP)
+        {
+            const KBDLLHOOKSTRUCT* k = (const KBDLLHOOKSTRUCT*)lParam;
+            if (k)
+            {
+                const bool injected = (k->flags & LLKHF_INJECTED) != 0 || (k->dwExtraInfo == (ULONG_PTR)0x484A4D43ULL);
+                const bool ext = (k->flags & LLKHF_EXTENDED) != 0;
+                uint16_t hid = HidFromKeyboardScanCode(k->scanCode, ext, k->vkCode);
+
+                if (!injected)
+                {
+                    int vk = (int)k->vkCode;
+                    if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
+                    {
+                        if (vk >= 0 && vk < 256)
+                        {
+                            if (g_hookKeyDown[vk])
+                            {
+                                if (hid != 0 && Settings_GetBlockBoundKeys() && Bindings_IsHidBound(hid) && !IsOwnForegroundWindow())
+                                {
+                                    Backend_SetMacroAnalogForMs(hid, 1.0f, 200);
+                                    INPUT inputs[2] = {};
+                                    inputs[0].type = INPUT_KEYBOARD;
+                                    inputs[0].ki.wVk = (WORD)k->vkCode;
+                                    inputs[0].ki.dwFlags = 0;
+                                    inputs[0].ki.dwExtraInfo = (ULONG_PTR)0x484A4D43ULL;
+                                    inputs[1].type = INPUT_KEYBOARD;
+                                    inputs[1].ki.wVk = (WORD)k->vkCode;
+                                    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+                                    inputs[1].ki.dwExtraInfo = (ULONG_PTR)0x484A4D43ULL;
+                                    unsigned long long now2 = GetTickCount64();
+                                    s_ignoreKeyEventsUntilMs.store(now2 + 200ULL, std::memory_order_release);
+                                    SendInput(2, inputs, sizeof(INPUT));
+                                    return 1;
+                                }
+                                else
+                                {
+                                    if (hid != 0) Backend_SetMacroAnalogForMs(hid, 1.0f, 200);
+                                }
+                            }
+                            else { g_hookKeyDown[vk] = true; }
+                        }
+                    }
+                    else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
+                    {
+                        int vk2 = (int)k->vkCode;
+                        if (vk2 >= 0 && vk2 < 256) g_hookKeyDown[vk2] = false;
+                    }
+                }
+
+                if (Settings_GetBlockBoundKeys() && !injected && !IsOwnForegroundWindow())
+                    if (hid != 0 && Bindings_IsHidBound(hid)) return 1;
+            }
+        }
+    }
+    return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
+}
+
+static LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION && lParam)
+    {
+        // Logs uniquement si recording/binding actif - pas de flood en jeu normal
+        if (MacroSystem::IsRecording())
+        {
+            Logger::Info("HOOK_MOUSE", "Avant MacroSystem::ProcessMouseInput");
+            MacroSystem::ProcessMouseInput((UINT)wParam, wParam, lParam);
+            Logger::Info("HOOK_MOUSE", "MacroSystem::ProcessMouseInput OK");
+        }
+
+        if (HallJoy_Bind_Macro::IsRecording() || HallJoy_Bind_Macro::IsDirectBindingEnabled())
+        {
+            Logger::Info("HOOK_MOUSE", "Avant HallJoy_Bind_Macro::ProcessMouseInput");
+            HallJoy_Bind_Macro::ProcessMouseInput((UINT)wParam, wParam, lParam);
+            Logger::Info("HOOK_MOUSE", "HallJoy_Bind_Macro::ProcessMouseInput OK");
+        }
+
+        // MouseComboSystem est toujours appele - throttle 5s pour eviter le flood
+        static ULONGLONG s_lastMouseLog = 0;
+        ULONGLONG nowMs = GetTickCount64();
+        bool doMouseLog = (nowMs - s_lastMouseLog) >= 5000;
+        if (doMouseLog) { Logger::Info("HOOK_MOUSE", "Avant MouseComboSystem::ProcessMouseEvent"); s_lastMouseLog = nowMs; }
+        MouseComboSystem::ProcessMouseEvent((UINT)wParam, wParam, lParam);
+        if (doMouseLog) Logger::Info("HOOK_MOUSE", "MouseComboSystem::ProcessMouseEvent OK");
+    }
+    return CallNextHookEx(g_hMouseHook, nCode, wParam, lParam);
+}
+
+static void RequestSettingsSave(HWND hMainWnd)
+{
+    SetTimer(hMainWnd, SETTINGS_SAVE_TIMER_ID, SETTINGS_SAVE_TIMER_MS, nullptr);
+}
+
+static void ApplyTimingSettings(HWND hMainWnd)
+{
+    UINT pollMs = std::clamp(Settings_GetPollingMs(), 1u, 20u);
+    RealtimeLoop_SetIntervalMs(pollMs);
+    UINT uiMs = std::clamp(Settings_GetUIRefreshMs(), 1u, 200u);
+    SetTimer(hMainWnd, UI_TIMER_ID, uiMs, nullptr);
+}
+
+static void ResizeChildren(HWND hwnd)
+{
+    if (!g_hPageMain) return;
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    SetWindowPos(g_hPageMain, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
+}
+
+static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, UiTheme::Brush_WindowBg());
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_CREATE:
+    {
+        Logger::Info("WM_CREATE", "Debut WM_CREATE");
+        UiTheme::ApplyToTopLevelWindow(hwnd);
+        Logger::Info("WM_CREATE", "UiTheme::ApplyToTopLevelWindow OK");
+
+        HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE);
+
+        Logger::Info("WM_CREATE", "Avant KeyboardUI_CreatePage");
+        g_hPageMain = KeyboardUI_CreatePage(hwnd, hInst);
+        if (!g_hPageMain)
+        {
+            Logger::Critical("WM_CREATE", "KeyboardUI_CreatePage a retourne NULL !");
+            MessageBoxW(hwnd, L"Failed to create main UI page.", L"Error", MB_ICONERROR);
+            return -1;
+        }
+        Logger::Info("WM_CREATE", "KeyboardUI_CreatePage OK");
+
+        ResizeChildren(hwnd);
+        ShowWindow(g_hPageMain, SW_SHOW);
+        Logger::Info("WM_CREATE", "ResizeChildren + ShowWindow OK");
+
+        Logger::Info("WM_CREATE", "Avant Backend_Init");
+        if (!Backend_Init())
+        {
+            uint32_t issues = Backend_GetLastInitIssues();
+            Logger::Error("WM_CREATE", "Backend_Init echoue ! issues=" + std::to_string(issues));
+            std::wstring msgText = L"Backend initialization failed with missing dependencies:\n\n";
+            msgText += BuildIssuesText(issues);
+            msgText += L"\n\nHallJoy will start in limited mode without analog input and virtual gamepads.";
+            MessageBoxW(hwnd, msgText.c_str(), L"HallJoy - Limited Mode", MB_ICONWARNING | MB_OK);
+            Logger::Info("WM_CREATE", "Mode limite - on continue quand meme");
+        }
+        else
+        {
+            Logger::Info("WM_CREATE", "Backend_Init OK");
+        }
+
+        Logger::Info("WM_CREATE", "Avant RealtimeLoop_Start");
+        RealtimeLoop_Start();
+        Logger::Info("WM_CREATE", "RealtimeLoop_Start OK");
+
+        Logger::Info("WM_CREATE", "Avant ApplyTimingSettings");
+        ApplyTimingSettings(hwnd);
+        Logger::Info("WM_CREATE", "ApplyTimingSettings OK");
+
+        Logger::Info("WM_CREATE", "Avant MacroEmergencyStop::Initialize");
+        MacroEmergencyStop::Initialize(hwnd);
+        Logger::Info("WM_CREATE", "MacroEmergencyStop::Initialize OK");
+
+        Logger::Info("WM_CREATE", "WM_CREATE termine avec succes");
+        return 0;
+    }
+
+    case WM_SIZE:
+        ResizeChildren(hwnd);
+        return 0;
+
+    case WM_DEVICECHANGE:
+        if (wParam == DBT_DEVNODES_CHANGED || wParam == DBT_DEVICEARRIVAL || wParam == DBT_DEVICEREMOVECOMPLETE)
+            Backend_NotifyDeviceChange();
+        return 0;
+
+    case WM_HOTKEY:
+        MacroEmergencyStop::ProcessHotkey(wParam);
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == UI_TIMER_ID)
+        {
+            if (g_hPageMain) KeyboardUI_OnTimerTick(g_hPageMain);
+
+            // Throttle 5 secondes - aucun impact perf
+            static ULONGLONG s_lastTimerLog = 0;
+            ULONGLONG nowTick = GetTickCount64();
+            bool doLog = (nowTick - s_lastTimerLog) >= 5000;
+            if (doLog) { Logger::Info("TIMER", "Avant MacroSystem::Tick"); s_lastTimerLog = nowTick; }
+            MacroSystem::Tick();
+            if (doLog) Logger::Info("TIMER", "Avant HallJoy_Bind_Macro::Tick");
+            HallJoy_Bind_Macro::Tick();
+            if (doLog) Logger::Info("TIMER", "Avant MouseComboSystem::Tick");
+            MouseComboSystem::Tick();
+            if (doLog) Logger::Info("TIMER", "Tick complet OK");
+        }
+        else if (wParam == SETTINGS_SAVE_TIMER_ID)
+        {
+            KillTimer(hwnd, SETTINGS_SAVE_TIMER_ID);
+            SettingsIni_Save(AppPaths_SettingsIni().c_str());
+        }
+        return 0;
+
+    case WM_APP_REQUEST_SAVE:
+        RequestSettingsSave(hwnd);
+        return 0;
+
+    case WM_APP_APPLY_TIMING:
+        ApplyTimingSettings(hwnd);
+        return 0;
+
+    case WM_APP_KEYBOARD_LAYOUT_CHANGED:
+        if (g_hPageMain && IsWindow(g_hPageMain))
+            PostMessageW(g_hPageMain, WM_APP_KEYBOARD_LAYOUT_CHANGED, 0, 0);
+        return 0;
+
+    case WM_DESTROY:
+    {
+        Logger::Info("WM_DESTROY", "Fermeture fenetre principale");
+        KillTimer(hwnd, UI_TIMER_ID);
+        KillTimer(hwnd, SETTINGS_SAVE_TIMER_ID);
+        MacroEmergencyStop::Shutdown();
+        Logger::Info("WM_DESTROY", "MacroEmergencyStop::Shutdown OK");
+
+        WINDOWPLACEMENT wp{};
+        wp.length = sizeof(wp);
+        RECT wr{};
+        if (GetWindowPlacement(hwnd, &wp)) wr = wp.rcNormalPosition;
+        else GetWindowRect(hwnd, &wr);
+
+        int ww = std::max(0, (int)(wr.right - wr.left));
+        int wh = std::max(0, (int)(wr.bottom - wr.top));
+        if (ww >= 300 && wh >= 240)
+        {
+            Settings_SetMainWindowWidthPx(ww);
+            Settings_SetMainWindowHeightPx(wh);
+            Settings_SetMainWindowPosXPx((int)wr.left);
+            Settings_SetMainWindowPosYPx((int)wr.top);
+        }
+
+        SettingsIni_Save(AppPaths_SettingsIni().c_str());
+        RealtimeLoop_Stop();
+        Backend_Shutdown();
+
+        // FIX : désinstallation des hooks ICI, avant PostQuitMessage
+        // Auparavant fait après la boucle de messages → hook souris encore actif
+        // pendant la destruction de la fenêtre → souris figée quelques instants
+        if (g_hKeyboardHook) { UnhookWindowsHookEx(g_hKeyboardHook); g_hKeyboardHook = nullptr; }
+        if (g_hMouseHook)    { UnhookWindowsHookEx(g_hMouseHook);    g_hMouseHook    = nullptr; }
+
+        MacroSystem::Shutdown();
+        MouseComboSystem::Shutdown();
+        HallJoy_Bind_Macro::Shutdown();
+
+        Logger::Info("WM_DESTROY", "Shutdown complet OK");
+        PostQuitMessage(0);
+        return 0;
+    }
+    }
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+int App_Run(HINSTANCE hInst, int nCmdShow)
+{
+    Logger::Info("APP_RUN", "Debut App_Run");
+
+    Logger::Info("APP_RUN", "Avant SettingsIni_Load");
+    if (!SettingsIni_Load(AppPaths_SettingsIni().c_str()))
+        SettingsIni_Save(AppPaths_SettingsIni().c_str());
+    Logger::Info("APP_RUN", "SettingsIni_Load OK");
+
+    Logger::Info("APP_RUN", "Avant InitCommonControlsEx");
+    INITCOMMONCONTROLSEX icc{};
+    icc.dwSize = sizeof(icc);
+    icc.dwICC = ICC_WIN95_CLASSES | ICC_TAB_CLASSES | ICC_BAR_CLASSES;
+    InitCommonControlsEx(&icc);
+    Logger::Info("APP_RUN", "InitCommonControlsEx OK");
+
+    Logger::Info("APP_RUN", "Avant RegisterClassW");
+    WNDCLASSW wc{};
+    wc.lpfnWndProc   = MainWndProc;
+    wc.hInstance     = hInst;
+    wc.lpszClassName = L"WootingVigemGui";
+    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = nullptr;
+    wc.hIcon         = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_HALLJOY), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    if (!RegisterClassW(&wc)) {
+        Logger::Critical("APP_RUN", "RegisterClassW echoue !");
+        return 1;
+    }
+    Logger::Info("APP_RUN", "RegisterClassW OK");
+
+    UINT dpi = WinUtil_GetSystemDpiCompat();
+    int defaultW = MulDiv(821, (int)dpi, 96);
+    int defaultH = MulDiv(832, (int)dpi, 96);
+    int w = Settings_GetMainWindowWidthPx();
+    int h = Settings_GetMainWindowHeightPx();
+    if (w <= 0) w = defaultW;
+    if (h <= 0) h = defaultH;
+    int minW = MulDiv(700, (int)dpi, 96);
+    int minH = MulDiv(520, (int)dpi, 96);
+    w = std::max(w, minW);
+    h = std::max(h, minH);
+    int x = Settings_GetMainWindowPosXPx();
+    int y = Settings_GetMainWindowPosYPx();
+    bool hasSavedPos = (x != std::numeric_limits<int>::min() && y != std::numeric_limits<int>::min());
+    if (!hasSavedPos || !IsWindowRectVisibleOnAnyScreen(x, y, w, h)) { x = CW_USEDEFAULT; y = CW_USEDEFAULT; }
+
+    Logger::Info("APP_RUN", "Avant CreateWindowExW");
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"HallJoy", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, w, h, nullptr, nullptr, hInst, nullptr);
+    if (!hwnd) {
+        Logger::Critical("APP_RUN", "CreateWindowExW echoue !");
+        return 2;
+    }
+    Logger::Info("APP_RUN", "CreateWindowExW OK");
+
+    if (wc.hIcon) SendMessageW(hwnd, WM_SETICON, ICON_BIG, (LPARAM)wc.hIcon);
+    HICON hSmall = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_SMALL), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    if (hSmall) SendMessageW(hwnd, WM_SETICON, (WPARAM)ICON_SMALL, (LPARAM)hSmall);
+
+    ShowWindow(hwnd, nCmdShow);
+
+    Logger::Info("APP_RUN", "Avant MacroSystem::Initialize");
+    MacroSystem::Initialize();
+    Logger::Info("APP_RUN", "MacroSystem::Initialize OK");
+
+    Logger::Info("APP_RUN", "Avant HallJoy_Bind_Macro::Initialize");
+    HallJoy_Bind_Macro::Initialize();
+    Logger::Info("APP_RUN", "HallJoy_Bind_Macro::Initialize OK");
+
+    Logger::Info("APP_RUN", "Avant MouseComboSystem::Initialize");
+    MouseComboSystem::Initialize();
+    Logger::Info("APP_RUN", "MouseComboSystem::Initialize OK");
+
+    Logger::Info("APP_RUN", "Avant SetWindowsHookExW keyboard");
+    g_hKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardBlockHookProc, GetModuleHandleW(nullptr), 0);
+    Logger::Info("APP_RUN", "Avant SetWindowsHookExW mouse");
+    g_hMouseHook    = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
+    Logger::Info("APP_RUN", "Hooks OK - entree boucle messages");
+
+    MSG msg{};
+    while (true)
+    {
+        BOOL gm = GetMessageW(&msg, nullptr, 0, 0);
+        if (gm == -1) { Logger::Critical("APP_RUN", "GetMessageW retourne -1 !"); return 3; }
+        if (gm == 0) break;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    // FIX : hooks, MacroSystem, MouseComboSystem et HallJoy_Bind_Macro::Shutdown
+    // sont maintenant appelés dans WM_DESTROY, avant PostQuitMessage.
+    // On vérifie ici au cas où WM_DESTROY n'aurait pas tout nettoyé (sécurité).
+    Logger::Info("APP_RUN", "Sortie boucle messages - nettoyage");
+
+    if (g_hKeyboardHook) { UnhookWindowsHookEx(g_hKeyboardHook); g_hKeyboardHook = nullptr; }
+    if (g_hMouseHook)    { UnhookWindowsHookEx(g_hMouseHook);    g_hMouseHook    = nullptr; }
+
+    Logger::Info("APP_RUN", "App_Run termine normalement");
+    return (int)msg.wParam;
+}
