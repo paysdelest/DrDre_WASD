@@ -404,6 +404,7 @@ FodyWeavers.xsd
 !.vscode/extensions.json
 !.vscode/*.code-snippets
 
+
 # Local History for Visual Studio Code
 .history/
 
@@ -416,3 +417,16 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Keep specific DLLs
+!plugins/abiv0.dll
+!plugins/abiv1.dll
+!runtime/wooting_analog_sdk.dll
+!runtime/wooting_analog_wrapper.dll
+
+# Exclude personal config files
+settings.ini
+bindings.ini
+*.json
+HallJoy_log.txt
+CrashDumps/
