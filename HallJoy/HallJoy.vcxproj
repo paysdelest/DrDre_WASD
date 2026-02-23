@@ -139,7 +139,9 @@
       <DelayLoadDLLs>wooting_analog_wrapper.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <PreBuildEvent>
-      <Command>xcopy /y /d "$(ProjectDir)..\runtime\wooting_analog_wrapper.dll" "$(TargetDir)"</Command>
+      <Command>xcopy /y /d "$(ProjectDir)..\runtime\wooting_analog_wrapper.dll" "$(TargetDir)"
+xcopy /Y /"$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"
+</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
