@@ -139,9 +139,8 @@
       <DelayLoadDLLs>wooting_analog_wrapper.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <PreBuildEvent>
-      <Command>xcopy /y /d "$(ProjectDir)..\runtime\wooting_analog_wrapper.dll" "$(TargetDir)"
-xcopy /Y /"$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"
-</Command>
+      <Command>xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_wrapper.dll" "$(TargetDir)"
+xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -164,10 +163,8 @@ xcopy /Y /"$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"
       <DelayLoadDLLs>wooting_analog_wrapper.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <PreBuildEvent>
-      <Command>xcopy /Y "$(SolutionDir)runtime\wooting_analog_sdk.dll" "$(OutDir)"
-xcopy /Y "$(SolutionDir)runtime\wooting_analog_wrapper.dll" "$(OutDir)"
-
-</Command>
+      <Command>xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_wrapper.dll" "$(TargetDir)"
+xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
