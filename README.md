@@ -98,37 +98,18 @@ This means it works with many HE keyboards supported by that stack — not only 
 
 
 
-\## 📦 DLL Installation — REQUIRED
+## 📦 DLL Installation — REQUIRED
 
+The repository includes pre-compiled `abiv0.dll` and `abiv1.dll` from the universal-analog-plugin, **with the deadlock fix applied** (stable 24h+ runtime).
 
+⚠️ **You MUST place the DLL files in this exact folder:** `C:\Program Files\WootingAnalogPlugins\`
 
-The repository includes pre-compiled `abiv0.dll` and `abiv1.dll` from the universal-analog-plugin, \*\*with the deadlock fix applied\*\* (stable 24h+ runtime).
-
-
-
-> ⚠️ \*\*You MUST place the DLL files in this exact folder:\*\*
-
->
-
-> ```
-
-> `C:\Program Files\WootingAnalogPlugins\`
-
-> ```
-
->
-
-> Create the folder if it does not exist. Without this step, the analog keyboard will not be detected.
-
-
+Create the folder if it does not exist. Without this step, the analog keyboard will not be detected.
 
 | File | Destination |
-
 |------|------------|
-
-| `abiv0.dll` | `C:\\Program Files\\WootingAnalogPlugins\\abiv0.dll` |
-
-| `abiv1.dll` | `C:\\Program Files\\WootingAnalogPlugins\\abiv1.dll` |
+| `abiv0.dll` | `C:\Program Files\WootingAnalogPlugins\abiv0.dll` |
+| `abiv1.dll` | `C:\Program Files\WootingAnalogPlugins\abiv1.dll` |
 
 
 
