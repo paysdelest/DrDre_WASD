@@ -70,7 +70,7 @@ Create the folder if it does not exist. Without this step, the analog keyboard w
 1. Copy `abiv0.dll` and `abiv1.dll` to `C:\Program Files\WootingAnalogPlugins\`
 2. Install [ViGEmBus](https://github.com/ViGEm/ViGEmBus)
 3. Install [Wooting Analog SDK](https://github.com/WootingKb/wooting-analog-sdk)
-4. Run `HallJoy.exe` as administrator
+4. Run `DrDre_WASD`
 5. Select or create a keyboard layout
 6. Map keys to gamepad controls in the **Remap** tab
 7. Adjust curves and behaviour in **Configuration**
