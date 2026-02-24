@@ -102,7 +102,7 @@ This means it works with many HE keyboards supported by that stack — not only 
 
 
 
-The repository includes pre-compiled `abiv0.dll` and `abiv1.dll` from the universal-analog-plugin, \*\*with the deadlock fix applied\*\* (stable 12h+ runtime).
+The repository includes pre-compiled `abiv0.dll` and `abiv1.dll` from the universal-analog-plugin, \*\*with the deadlock fix applied\*\* (stable 24h+ runtime).
 
 
 
@@ -112,7 +112,7 @@ The repository includes pre-compiled `abiv0.dll` and `abiv1.dll` from the univer
 
 > ```
 
-> C:\\Program Files\\WootingAnalogPlugins\\
+> `C:\Program Files\WootingAnalogPlugins\`
 
 > ```
 
@@ -357,13 +357,13 @@ Each combo contains a sequence of:
 3\. Build
 
 
-
-
 > ⚠️ **Note**: `wooting_analog_sdk.dll` is not included in the source zip due to GitHub limitations.
 > You can download it directly from the [runtime folder of this repository](https://github.com/paysdelest/DrDre_WASD/tree/main/runtime)
 or
 > Download it separately from the [Wooting Analog SDK releases](https://github.com/WootingKb/wooting-analog-sdk/releases) 
 > and place it in the `runtime\` folder before building.
+
+
 
 ---
 
