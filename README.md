@@ -358,6 +358,13 @@ Each combo contains a sequence of:
 
 
 
+
+> ⚠️ **Note**: `wooting_analog_sdk.dll` is not included in the source zip due to GitHub limitations.
+> You can download it directly from the [runtime folder of this repository](https://github.com/paysdelest/DrDre_WASD/tree/main/runtime)
+or
+> Download it separately from the [Wooting Analog SDK releases](https://github.com/WootingKb/wooting-analog-sdk/releases) 
+> and place it in the `runtime\` folder before building.
+
 ---
 
 
