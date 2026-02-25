@@ -35,16 +35,17 @@
 #include "remap_icons.h"
 #include "settings.h"
 #include "key_settings.h" // NEW
-#include "macro_system.h"
-#include "macro_ui.h"
+#include "free_combo_ui.h"
 
 #pragma comment(lib, "Comctl32.lib")
 
 // Scaling shortcut
 static int S(HWND hwnd, int px) { return WinUtil_ScalePx(hwnd, px); }
 static void SetSelectedHid(uint16_t hid);
+static void ResizeSubUi(HWND hWnd);
 static LRESULT CALLBACK KeyBtnSubclassProc(HWND hBtn, UINT msg, WPARAM wParam, LPARAM lParam,
     UINT_PTR, DWORD_PTR dwRefData);
+static void EnsureFreeComboPageCreated(HWND hTabParent);
 
 struct KeyboardViewMetrics
 {
@@ -254,13 +255,23 @@ static void ShowSubPage(int idx)
 {
     g_activeSubTab = idx;
 
+    if (idx == 2)
+    {
+        EnsureFreeComboPageCreated(g_hSubTab);
+        if (g_hSubTab)
+        {
+            HWND hMain = GetParent(g_hSubTab);
+            if (hMain) ResizeSubUi(hMain);
+        }
+    }
+
     // NEW: clear selection when leaving Configuration tab
     if (idx != 1 && g_selectedHid != 0)
         SetSelectedHid(0);
 
     if (g_hPageRemap)  ShowWindow(g_hPageRemap, idx == 0 ? SW_SHOW : SW_HIDE);
     if (g_hPageConfig) ShowWindow(g_hPageConfig, idx == 1 ? SW_SHOW : SW_HIDE);
-    if (g_hPageMacro) ShowWindow(g_hPageMacro, idx == 2 ? SW_SHOW : SW_HIDE);
+    if (g_hPageFreeCombo) ShowWindow(g_hPageFreeCombo, idx == 2 ? SW_SHOW : SW_HIDE);
     if (g_hPageTester) ShowWindow(g_hPageTester, idx == 3 ? SW_SHOW : SW_HIDE);
     if (g_hPageGlobal) ShowWindow(g_hPageGlobal, idx == 4 ? SW_SHOW : SW_HIDE);
 
@@ -304,8 +315,17 @@ static void ResizeSubUi(HWND hWnd)
     if (g_hPageGlobal)
         SetWindowPos(g_hPageGlobal, nullptr, tabRc.left, tabRc.top, pw, ph, SWP_NOZORDER);
 
-    if (g_hPageMacro)
-        SetWindowPos(g_hPageMacro, nullptr, tabRc.left, tabRc.top, pw, ph, SWP_NOZORDER);
+    if (g_hPageFreeCombo)
+        SetWindowPos(g_hPageFreeCombo, nullptr, tabRc.left, tabRc.top, pw, ph, SWP_NOZORDER);
+}
+
+static void EnsureFreeComboPageCreated(HWND hTabParent)
+{
+    if (!hTabParent || g_hPageFreeCombo) return;
+    HINSTANCE hInst = (HINSTANCE)GetWindowLongPtrW(hTabParent, GWLP_HINSTANCE);
+    g_hPageFreeCombo = FreeComboUI::CreatePage(hTabParent, hInst);
+    if (g_hPageFreeCombo)
+        ShowWindow(g_hPageFreeCombo, SW_HIDE);
 }
 
 // ----- Right-click unbind on key button + drag bound icon (subclass) -----
@@ -1704,7 +1724,7 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         tie.pszText = (LPWSTR)L"Configuration";
         TabCtrl_InsertItem(g_hSubTab, 1, &tie);
 
-        tie.pszText = (LPWSTR)L"Combo/Macro";
+        tie.pszText = (LPWSTR)L"Macro Custom";
         TabCtrl_InsertItem(g_hSubTab, 2, &tie);
 
         tie.pszText = (LPWSTR)L"Gamepad Tester";
@@ -1760,21 +1780,7 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         g_hPageGlobal = CreateWindowW(L"KeyboardSubGlobalSettingsPage", L"",
             WS_CHILD | WS_CLIPCHILDREN, 0, 0, 100, 100, g_hSubTab, nullptr, hInst, nullptr);
 
-        // Create Macro page
-        static bool macroReg = false;
-        if (!macroReg)
-        {
-            WNDCLASSW wc{};
-            wc.lpfnWndProc = MacroSubpageProc;
-            wc.hInstance = hInst;
-            wc.lpszClassName = L"MacroSubpage";
-            wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-            wc.hbrBackground = UiTheme::Brush_PanelBg();
-            RegisterClassW(&wc);
-            macroReg = true;
-        }
-        g_hPageMacro = CreateWindowW(L"MacroSubpage", L"",
-        WS_CHILD | WS_CLIPCHILDREN, 0, 0, 100, 100, g_hSubTab, nullptr, hInst, nullptr);
+        g_hPageFreeCombo = nullptr; // lazy-create on first tab activation
 
         ResizeSubUi(hWnd);
         TabCtrl_SetCurSel(g_hSubTab, 0);

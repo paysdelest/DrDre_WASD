@@ -12,4 +12,4 @@ bool KeyboardUI_HasHid(uint16_t hid);
 void KeyboardUI_SetDragHoverHid(uint16_t hid); // 0 = none
 
 // External declarations for subpages
-extern HWND g_hPageMacro;
+extern HWND g_hPageFreeCombo;

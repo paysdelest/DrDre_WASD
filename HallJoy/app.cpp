@@ -37,6 +37,7 @@
 #include "ui_theme.h"
 #include "macro_system.h"
 #include "mouse_combo_system.h"
+#include "free_combo_system.h"   // ← Nouveau système combos libres v2.0
 #include "Logger.h"
 
 // shared ignore window used by macro senders to prevent retrigger loops
@@ -381,9 +382,9 @@ enum class DependencyInstallResult { Skipped = 0, Installed = 1, Failed = 2 };
 
 static DependencyInstallResult TryInstallMissingDependencies(HWND hwnd, uint32_t issues)
 {
-    const bool needVigem      = (issues & BackendInitIssue_VigemBusMissing) != 0;
+    const bool needVigem = (issues & BackendInitIssue_VigemBusMissing) != 0;
     const bool needWootingSdk = (issues & (BackendInitIssue_WootingSdkMissing | BackendInitIssue_WootingIncompatible | BackendInitIssue_WootingNoPlugins)) != 0;
-    const bool suggestUap     = (issues & (BackendInitIssue_WootingSdkMissing | BackendInitIssue_WootingIncompatible | BackendInitIssue_WootingNoPlugins)) != 0;
+    const bool suggestUap = (issues & (BackendInitIssue_WootingSdkMissing | BackendInitIssue_WootingIncompatible | BackendInitIssue_WootingNoPlugins)) != 0;
     if (!needVigem && !needWootingSdk) return DependencyInstallResult::Skipped;
 
     std::wstring prompt = L"Missing dependencies detected:\n\n";
@@ -396,18 +397,26 @@ static DependencyInstallResult TryInstallMissingDependencies(HWND hwnd, uint32_t
     {
         std::wstring installerPath;
         if (!DownloadLatestAssetToTemp({ L"https://api.github.com/repos/ViGEm/ViGEmBus/releases/latest", L"https://api.github.com/repos/nefarius/ViGEmBus/releases/latest" }, { L"vigem", L"bus" }, { L"x64", L"setup", L"installer" }, { L".exe", L".msi" }, installerPath))
-        { MessageBoxW(hwnd, L"Failed to download latest ViGEm Bus installer from GitHub.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed; }
+        {
+            MessageBoxW(hwnd, L"Failed to download latest ViGEm Bus installer from GitHub.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed;
+        }
         if (!RunInstallerElevatedAndWait(hwnd, installerPath))
-        { MessageBoxW(hwnd, L"ViGEm Bus installation did not complete successfully.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed; }
+        {
+            MessageBoxW(hwnd, L"ViGEm Bus installation did not complete successfully.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed;
+        }
     }
 
     if (needWootingSdk)
     {
         std::wstring installerPath;
         if (!DownloadLatestAssetToTemp({ L"https://api.github.com/repos/WootingKb/wooting-analog-sdk/releases/latest" }, { L"wooting", L"analog", L"sdk" }, { L"x86_64", L"windows", L"msi" }, { L".msi", L".exe" }, installerPath))
-        { MessageBoxW(hwnd, L"Failed to download latest Wooting Analog SDK installer from GitHub.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed; }
+        {
+            MessageBoxW(hwnd, L"Failed to download latest Wooting Analog SDK installer from GitHub.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed;
+        }
         if (!RunInstallerElevatedAndWait(hwnd, installerPath))
-        { MessageBoxW(hwnd, L"Wooting Analog SDK installation did not complete successfully.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed; }
+        {
+            MessageBoxW(hwnd, L"Wooting Analog SDK installation did not complete successfully.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed;
+        }
     }
 
     if (suggestUap)
@@ -438,7 +447,9 @@ static bool RelaunchSelf()
     STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(exePath, mutableCmd.data(), nullptr, nullptr, FALSE, 0, nullptr, workDir.empty() ? nullptr : workDir.c_str(), &si, &pi))
-    { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return true; }
+    {
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return true;
+    }
     HINSTANCE h = ShellExecuteW(nullptr, L"open", exePath, nullptr, workDir.empty() ? nullptr : workDir.c_str(), SW_SHOWNORMAL);
     return ((INT_PTR)h > 32);
 }
@@ -545,6 +556,17 @@ static LRESULT CALLBACK KeyboardBlockHookProc(int nCode, WPARAM wParam, LPARAM l
             }
         }
 
+        // FreeComboSystem : toujours actif, ecoute toutes les touches non-injectees
+        if (wParam == WM_KEYDOWN || wParam == WM_KEYUP || wParam == WM_SYSKEYDOWN || wParam == WM_SYSKEYUP)
+        {
+            const KBDLLHOOKSTRUCT* kfc = (const KBDLLHOOKSTRUCT*)lParam;
+            if (kfc && !(kfc->flags & LLKHF_INJECTED) && kfc->dwExtraInfo != (ULONG_PTR)0x484A4D43ULL)
+            {
+                if (FreeComboSystem::ProcessKeyboardEvent((UINT)wParam, (WPARAM)kfc->vkCode, lParam))
+                    return 1; // block trigger key passthrough when a free combo consumes it
+            }
+        }
+
         if (wParam == WM_KEYDOWN || wParam == WM_KEYUP || wParam == WM_SYSKEYDOWN || wParam == WM_SYSKEYUP)
         {
             const KBDLLHOOKSTRUCT* k = (const KBDLLHOOKSTRUCT*)lParam;
@@ -565,7 +587,6 @@ static LRESULT CALLBACK KeyboardBlockHookProc(int nCode, WPARAM wParam, LPARAM l
                             {
                                 if (hid != 0 && Settings_GetBlockBoundKeys() && Bindings_IsHidBound(hid) && !IsOwnForegroundWindow())
                                 {
-                                    Backend_SetMacroAnalogForMs(hid, 1.0f, 200);
                                     INPUT inputs[2] = {};
                                     inputs[0].type = INPUT_KEYBOARD;
                                     inputs[0].ki.wVk = (WORD)k->vkCode;
@@ -579,10 +600,6 @@ static LRESULT CALLBACK KeyboardBlockHookProc(int nCode, WPARAM wParam, LPARAM l
                                     s_ignoreKeyEventsUntilMs.store(now2 + 200ULL, std::memory_order_release);
                                     SendInput(2, inputs, sizeof(INPUT));
                                     return 1;
-                                }
-                                else
-                                {
-                                    if (hid != 0) Backend_SetMacroAnalogForMs(hid, 1.0f, 200);
                                 }
                             }
                             else { g_hookKeyDown[vk] = true; }
@@ -629,6 +646,9 @@ static LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam)
         if (doMouseLog) { Logger::Info("HOOK_MOUSE", "Avant MouseComboSystem::ProcessMouseEvent"); s_lastMouseLog = nowMs; }
         MouseComboSystem::ProcessMouseEvent((UINT)wParam, wParam, lParam);
         if (doMouseLog) Logger::Info("HOOK_MOUSE", "MouseComboSystem::ProcessMouseEvent OK");
+
+        // FreeComboSystem : toujours actif
+        FreeComboSystem::ProcessMouseEvent((UINT)wParam, wParam, lParam);
     }
     return CallNextHookEx(g_hMouseHook, nCode, wParam, lParam);
 }
@@ -754,6 +774,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             HallJoy_Bind_Macro::Tick();
             if (doLog) Logger::Info("TIMER", "Avant MouseComboSystem::Tick");
             MouseComboSystem::Tick();
+            FreeComboSystem::Tick();   // ← Tick combos libres v2.0
             if (doLog) Logger::Info("TIMER", "Tick complet OK");
         }
         else if (wParam == SETTINGS_SAVE_TIMER_ID)
@@ -808,10 +829,11 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         // Auparavant fait après la boucle de messages → hook souris encore actif
         // pendant la destruction de la fenêtre → souris figée quelques instants
         if (g_hKeyboardHook) { UnhookWindowsHookEx(g_hKeyboardHook); g_hKeyboardHook = nullptr; }
-        if (g_hMouseHook)    { UnhookWindowsHookEx(g_hMouseHook);    g_hMouseHook    = nullptr; }
+        if (g_hMouseHook) { UnhookWindowsHookEx(g_hMouseHook);    g_hMouseHook = nullptr; }
 
         MacroSystem::Shutdown();
         MouseComboSystem::Shutdown();
+        FreeComboSystem::Shutdown();   // ← Shutdown combos libres v2.0
         HallJoy_Bind_Macro::Shutdown();
 
         Logger::Info("WM_DESTROY", "Shutdown complet OK");
@@ -841,12 +863,12 @@ int App_Run(HINSTANCE hInst, int nCmdShow)
 
     Logger::Info("APP_RUN", "Avant RegisterClassW");
     WNDCLASSW wc{};
-    wc.lpfnWndProc   = MainWndProc;
-    wc.hInstance     = hInst;
+    wc.lpfnWndProc = MainWndProc;
+    wc.hInstance = hInst;
     wc.lpszClassName = L"WootingVigemGui";
-    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr;
-    wc.hIcon         = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_HALLJOY), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    wc.hIcon = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_HALLJOY), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
     if (!RegisterClassW(&wc)) {
         Logger::Critical("APP_RUN", "RegisterClassW echoue !");
         return 1;
@@ -898,7 +920,7 @@ int App_Run(HINSTANCE hInst, int nCmdShow)
     Logger::Info("APP_RUN", "Avant SetWindowsHookExW keyboard");
     g_hKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardBlockHookProc, GetModuleHandleW(nullptr), 0);
     Logger::Info("APP_RUN", "Avant SetWindowsHookExW mouse");
-    g_hMouseHook    = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
+    g_hMouseHook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
     Logger::Info("APP_RUN", "Hooks OK - entree boucle messages");
 
     MSG msg{};
@@ -917,8 +939,12 @@ int App_Run(HINSTANCE hInst, int nCmdShow)
     Logger::Info("APP_RUN", "Sortie boucle messages - nettoyage");
 
     if (g_hKeyboardHook) { UnhookWindowsHookEx(g_hKeyboardHook); g_hKeyboardHook = nullptr; }
-    if (g_hMouseHook)    { UnhookWindowsHookEx(g_hMouseHook);    g_hMouseHook    = nullptr; }
+    if (g_hMouseHook) { UnhookWindowsHookEx(g_hMouseHook);    g_hMouseHook = nullptr; }
 
     Logger::Info("APP_RUN", "App_Run termine normalement");
     return (int)msg.wParam;
 }
+
+
+
+

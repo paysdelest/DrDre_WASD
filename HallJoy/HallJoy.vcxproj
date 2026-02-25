@@ -71,10 +71,10 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <TargetName>DrDre_WASD_v1.0</TargetName>
+    <TargetName>DrDre_WASD_v2.0</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <TargetName>DrDre_WASD_v1.0</TargetName>
+    <TargetName>DrDre_WASD_v2.0</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -139,8 +139,7 @@
       <DelayLoadDLLs>wooting_analog_wrapper.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <PreBuildEvent>
-      <Command>xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_wrapper.dll" "$(TargetDir)"
-xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"</Command>
+      <Command>xcopy /y /d "$(ProjectDir)..\runtime\wooting_analog_wrapper.dll" "$(TargetDir)"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -163,8 +162,10 @@ xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"</Com
       <DelayLoadDLLs>wooting_analog_wrapper.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <PreBuildEvent>
-      <Command>xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_wrapper.dll" "$(TargetDir)"
-xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"</Command>
+      <Command>xcopy /Y "$(SolutionDir)runtime\wooting_analog_sdk.dll" "$(OutDir)"
+xcopy /Y "$(SolutionDir)runtime\wooting_analog_wrapper.dll" "$(OutDir)"
+
+</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -177,6 +178,8 @@ xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"</Com
     <ClInclude Include="curve_math.h" />
     <ClInclude Include="HallJoy_V2.0.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="free_combo_system.h" />
+    <ClInclude Include="free_combo_ui.h" />
     <ClInclude Include="gamepad_render.h" />
     <ClInclude Include="ini_util.h" />
     <ClInclude Include="keyboard_bind_panel.h" />
@@ -234,6 +237,8 @@ xcopy /Y /D "$(ProjectDir)..\runtime\wooting_analog_sdk.dll" "$(TargetDir)"</Com
     <ClCompile Include="bindings.cpp" />
     <ClCompile Include="binding_actions.cpp" />
     <ClCompile Include="curve_math.cpp" />
+    <ClCompile Include="free_combo_system.cpp" />
+    <ClCompile Include="free_combo_ui.cpp" />
     <ClCompile Include="gamepad_render.cpp" />
     <ClCompile Include="ini_util.cpp" />
     <ClCompile Include="keyboard_bind_panel.cpp" />
