@@ -1,8 +1,8 @@
-# DrDre_WASD
+# DrDre_WASD v2.0
 
-> **Based on [HallJoy by PashOK7](https://github.com/PashOK7/HallJoy)** — significantly extended with a full Combo/Macro system, analog keyboard stability fixes, and advanced gaming features.
+> **Based on [HallJoy by PashOK7](https://github.com/PashOK7/HallJoy)** — significantly extended with a full Custom Macro system, analog keyboard stability fixes, and advanced gaming features.
 
-DrDre_WASD is a Windows desktop application that transforms a **Hall Effect analog keyboard** into one or more virtual Xbox 360 controllers — with an advanced Combo/Macro system on top.
+DrDre_WASD is a Windows desktop application that transforms a **Hall Effect analog keyboard** into one or more virtual Xbox 360 controllers — with an advanced Custom Macro system on top.
 
 It reads per-key analog values via the Wooting Analog SDK and publishes XInput-compatible gamepads via ViGEmBus.
 
@@ -10,14 +10,16 @@ It reads per-key analog values via the Wooting Analog SDK and publishes XInput-c
 
 ---
 
-## 🆕 What's new compared to PashOK7/HallJoy
+## 🆕 What's new in v2.0
 
-- ✅ **Full Combo/Macro system** — trigger-based combos and recorded macros with JSON import/export
-- ✅ **Mouse combo triggers** — right-click held + left click, middle click combos, scroll wheel combos, double/triple click, simultaneous clicks
-- ✅ **Emergency stop** — `Ctrl+Shift+Alt+F12` kills all running macros/combos instantly
+- ✅ **Custom Macro tab** — free-trigger macro editor replacing the old Combo/Macro tab, fully redesigned with a premium dark UI
+- ✅ **Enable / Disable macros** — toggle any macro on or off via the UI button or right-click on the list, without deleting it
+- ✅ **Mouse combo triggers** — right-click held + left click, middle click combos, scroll wheel combos, double-click, simultaneous clicks
+- ✅ **Emergency stop** — `Ctrl+Shift+Alt+F12` kills all running macros instantly
 - ✅ **abiv1.dll deadlock fix** — resolved a crash after ~4 hours of runtime caused by a mutex deadlock in `unload()` inside the universal-analog-plugin
 - ✅ **Thread-safe analog backend** — mutex-protected Wooting analog reads, atomic state management
 - ✅ **Improved shutdown sequence** — proper hook cleanup on exit to prevent crashes
+- ✅ **PreBuildEvent** — automatically copies Wooting SDK DLLs from `runtime\` to the output directory at build time
 
 ---
 
@@ -31,7 +33,7 @@ It reads per-key analog values via the Wooting Analog SDK and publishes XInput-c
 - Optional block of physical key output when bound to gamepad input
 - Keyboard layout editor (move/add/remove keys, labels, HID codes, sizes, positions)
 - Custom layout presets with fast switching
-- **Full Combo/Macro system** (see below)
+- **Full Custom Macro system** (see below)
 - Settings saved next to the executable
 
 ---
@@ -70,101 +72,148 @@ Create the folder if it does not exist. Without this step, the analog keyboard w
 1. Copy `abiv0.dll` and `abiv1.dll` to `C:\Program Files\WootingAnalogPlugins\`
 2. Install [ViGEmBus](https://github.com/ViGEm/ViGEmBus)
 3. Install [Wooting Analog SDK](https://github.com/WootingKb/wooting-analog-sdk)
-4. Run `DrDre_WASD`
+4. Run `DrDre_WASD.exe`
 5. Select or create a keyboard layout
 6. Map keys to gamepad controls in the **Remap** tab
 7. Adjust curves and behaviour in **Configuration**
-8. Create combos or record macros in **Combo/Macro**
+8. Create and manage macros in the **Custom Macro** tab
 
-> If dependencies are missing, HallJoy may offer to download/install them automatically.
+> If dependencies are missing, the app may offer to download/install them automatically.
 
 ---
 
-## ⚡ Combo System
+## 🎬 Custom Macro Tab — Full Guide
 
-The Combo system lets you bind complex action sequences to specific **mouse or keyboard trigger combinations** that fire automatically during gameplay — no dedicated macro keys needed.
+The **Custom Macro** tab lets you bind complex action sequences to any **mouse or keyboard trigger combination**, fired automatically during gameplay — no dedicated macro keys needed.
+
+### Creating a Macro
+
+1. Click **`+ New`** to create a new macro entry
+2. Give it a name in the **Combo Name** field
+3. Click **`● Capture trigger`** — press your desired key or mouse button combination (1 or 2 inputs)
+4. Build your action sequence in the **Actions** card
+5. Click **`💾 Save combo`** to confirm
+
+### Enabling / Disabling a Macro
+
+- **Click the checkbox** `Combo enabled` in the Options card, then Save — or
+- **Right-click** the macro in the list for an instant toggle
+
+The left list shows a **green dot** (active) or **grey dot** (inactive) next to each macro at a glance.
 
 ### Available Trigger Types
 
-| Trigger | Example use |
-|--------|-------------|
+#### Mouse triggers
+| Trigger | Description |
+|---------|-------------|
 | Right-click held + Left click | Fire while aiming (ADS + shoot) |
 | Left-click held + Right click | Alternative ADS combo |
 | Middle-click held + Left click | Custom utility |
 | Middle-click held + Right click | Custom utility |
 | Double left click | Fast double-tap action |
 | Double right click | Fast double-tap action |
-| Triple left click | Triple-tap sequence |
 | Left + Right click simultaneously | Two-button safety combo |
 | Scroll up + Right click held | Scope cycle while aiming |
 | Scroll down + Right click held | Reload cancel / weapon swap |
 
+#### Keyboard triggers
+Any single key or modifier + key combination captured via the **Capture trigger** button.
+
 ### Action Types
 
-Each combo contains a sequence of:
-- **Press key** — hold a key down
-- **Release key** — release a held key
-- **Tap key** — press and release instantly
-- **Type text** — type a full string
-- **Mouse click** — left, right, or middle
-- **Wait (ms)** — delay between actions
+Each macro is a sequence of steps — mix and match:
 
-### Combo Options
-- **Automatic repetition** while trigger is held
-- **Repeat delay** in milliseconds
-- **JSON Export/Import** for sharing configurations
+| Action | Icon | Description |
+|--------|------|-------------|
+| Press key | 🔵 | Hold a key down until a Release action |
+| Release key | ⚫ | Release a previously held key |
+| Tap key | 🟢 | Instant press + release |
+| Type text | 🟡 | Type a full string of characters |
+| Mouse click | 🟣 | Left, right, or middle click |
+| Wait (ms) | ⬜ | Pause between actions |
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| Combo enabled | Activate or deactivate without deleting |
+| Repeat while held | Keep firing the sequence as long as the trigger is held |
+| Repeat delay | Milliseconds between each repetition |
 
 ---
 
 ## 🎮 Gaming Use Cases
 
-### FPS
-- **Right-click held + Left click → Tap `P`** — ping/mark an enemy while staying in ADS
-- **Double left click → Press `Shift` + Tap `W` + Release `Shift`** — instant sprint burst
-- **Left + Right simultaneously → Tap `G`** — throw grenade with two-button safety
-- **Scroll down + Right click held → Tap `1` + Wait 100ms + Tap `1`** — reload cancel
+### 🎯 FPS (Valorant, CS2, Apex, Warzone...)
 
-### Building Games (Fortnite, Minecraft...)
-- **Right-click held + Left click → Tap `F1` + Wait 50ms + Tap `F1`** — instant build confirm
-- **Triple left click → Tap `Q` + Wait 30ms + Tap `E` + Wait 30ms + Tap `R`** — rapid material cycle
-- **Middle click + Left click → Tap `Z` + Wait 200ms + Tap `Z`** — build-edit-build loop
+The most powerful use: bind complex mechanics to your **existing mouse buttons** — no extra keys required.
 
-### MMO / ARPG
-- **Right-click held + Left click → Tap `1` + Wait 100ms + Tap `2` + Wait 100ms + Tap `3`** — 3-skill opener while targeting
-- **Scroll up + Right click held → Tap `4` + Wait 50ms + Tap `5`** — burst combo from scroll
-- **Double right click → Tap `F` + Wait 500ms + Tap `F`** — charge / detonate pattern
+| Trigger | Action sequence | Result |
+|---------|----------------|--------|
+| Right-click held + Left click | Tap `P` | Ping an enemy while staying in ADS |
+| Double left click | Press `Shift` + Tap `W` + Release `Shift` | Instant sprint burst |
+| Left + Right simultaneously | Tap `G` | Throw grenade with two-button safety |
+| Scroll down + Right click held | Tap `1` + Wait 100ms + Tap `1` | Reload cancel / fast weapon swap |
+| Middle click + Left click | Tap `E` | Interact / loot while shooting |
 
----
+### 🏗️ Building Games (Fortnite, Minecraft, Valheim...)
 
-## 🎬 Macro System
+Bind build/edit/material cycles to mouse combos and free your keyboard fingers.
 
-### Recording
-1. Click **"+ New Macro"** to create a new macro
-2. Click **"Record"** — all keyboard and mouse actions are captured with millisecond timestamps
-3. Perform your actions
-4. Click **"Record"** again to stop
+| Trigger | Action sequence | Result |
+|---------|----------------|--------|
+| Right-click held + Left click | Tap `F1` + Wait 50ms + Tap `F1` | Instant build confirm |
+| Triple left click | Tap `Q` + Wait 30ms + Tap `E` + Wait 30ms + Tap `R` | Rapid material cycle |
+| Middle click + Left click | Tap `Z` + Wait 200ms + Tap `Z` | Build → edit → build loop |
+| Scroll up + Right click held | Tap `F2` | Switch to wall instantly while aiming |
 
-### Playback Controls
-- **Play** — execute the recorded sequence
-- **Loop** — continuous playback
-- **Speed Control** — 0.1x to 10x
-- **Block Keys During Playback** — prevent accidental input
+### ⚔️ MMO / ARPG (WoW, Final Fantasy XIV, Path of Exile, Diablo...)
 
-### Features
-- Visual action list with full timestamps
-- Emergency Stop: `Ctrl+Shift+Alt+F12`
-- JSON Export/Import
-- Real-time recording and playback status
+Chain skill rotations to a single trigger. No more fumbling across the keyboard mid-fight.
+
+| Trigger | Action sequence | Result |
+|---------|----------------|--------|
+| Right-click held + Left click | Tap `1` + Wait 100ms + Tap `2` + Wait 100ms + Tap `3` | 3-skill opener while targeting |
+| Scroll up + Right click held | Tap `4` + Wait 50ms + Tap `5` | Burst combo from scroll |
+| Double right click | Tap `F` + Wait 500ms + Tap `F` | Charge / detonate pattern |
+| Middle click + Right click | Tap `6` + Wait 200ms + Tap `7` + Wait 200ms + Tap `8` | Defensive cooldown chain |
+
+### 🗺️ Adventure / Open World (Elden Ring, Zelda, RDR2, GTA...)
+
+Automate sequences that normally require split-second timing.
+
+| Trigger | Action sequence | Result |
+|---------|----------------|--------|
+| Double left click | Tap `X` + Wait 80ms + Tap `X` | Double dodge / roll |
+| Right-click held + Left click | Tap `C` + Wait 100ms + Tap `V` | Block then parry |
+| Scroll down + Right click held | Tap `H` + Wait 300ms + Tap `H` | Horse call + gallop |
+| Middle click + Left click | Press `Shift` + Tap `F` + Release `Shift` | Power attack |
+
+### 💬 Text Macros — Type Lines / Code at Speed
+
+The **Type text** action turns any macro into a **text expander**. Fire a full sentence, code snippet, or command with a single trigger.
+
+| Trigger | Action sequence | Result |
+|---------|----------------|--------|
+| Any keyboard shortcut | Type text `gg well played, thanks for the game!` | GG message in one keystroke |
+| Any keyboard shortcut | Type text `sudo apt update && sudo apt upgrade -y` | Full terminal command instantly |
+| Any keyboard shortcut | Type text `console.log('DEBUG:', JSON.stringify(data, null, 2));` | Code snippet in any editor |
+| Any keyboard shortcut | Type text + Wait 200ms + Tap `Enter` | Auto-submit a form / command |
+| Repeat while held | Type text `#` | Fill a line with characters for formatting |
+
+> **Tip**: combine **Type text** with **Wait** and **Tap Enter** to auto-send chat messages, commands, or multi-line snippets in any application.
 
 ---
 
 ## 🖥️ Interface Tabs
 
-- **Remap** — drag and drop gamepad buttons onto keyboard keys, up to 4 virtual gamepads
-- **Configuration** — per-key analog curve editor (Linear, Segments, Custom), deadzone, activation point
-- **Combo/Macro** — full combo and macro management
-- **Gamepad Tester** — real-time monitor of all virtual gamepad axes and button states
-- **Global Settings** — keyboard layout, polling rate (1ms default), UI refresh interval
+| Tab | Description |
+|-----|-------------|
+| **Remap** | Drag and drop gamepad buttons onto keyboard keys, up to 4 virtual gamepads |
+| **Configuration** | Per-key analog curve editor (Linear, Segments, Custom), deadzone, activation point |
+| **Custom Macro** | Free-trigger macro editor with full action sequencer, enable/disable toggle, right-click menu |
+| **Gamepad Tester** | Real-time monitor of all virtual gamepad axes and button states |
+| **Global Settings** | Keyboard layout, polling rate (1ms default), UI refresh interval |
 
 ---
 
@@ -172,12 +221,12 @@ Each combo contains a sequence of:
 
 1. Open `HallJoy.sln` in Visual Studio 2022
 2. Select `Release | x64`
-3. Build
+3. Build — the PreBuildEvent automatically copies `wooting_analog_sdk.dll` and `wooting_analog_wrapper.dll` from `runtime\` to the output directory
 
-> ⚠️ **Note**: `wooting_analog_sdk.dll` is not included in the source zip due to GitHub limitations.
-> You can download it directly from the [runtime folder of this repository](https://github.com/paysdelest/DrDre_WASD/tree/main/runtime)
+> ⚠️ **Note**: `wooting_analog_sdk.dll` and `wooting_analog_wrapper.dll` are included in the `runtime\` folder of this repository but are not bundled in the source zip.
+> Download them directly from the [runtime folder](https://github.com/paysdelest/DrDre_WASD/tree/main/runtime)
 > or from the [Wooting Analog SDK releases](https://github.com/WootingKb/wooting-analog-sdk/releases)
-> and place it in the `runtime\` folder before building.
+> and place them in the `runtime\` folder before building.
 
 ---
 
@@ -197,8 +246,9 @@ A fix has been submitted upstream to [universal-analog-plugin](https://github.co
 
 - **All analog values at 0** — check your keyboard firmware mode. Some keyboards disable analog SDK output when **Turbo mode** is enabled. Disable it and restart.
 - **Analog stops working after a plugin update** — reinstall the DLL files from this repo and keep only one plugin variant in `C:\Program Files\WootingAnalogPlugins\`
-- **Macro not playing** — check if emergency stop was triggered (`Ctrl+Shift+Alt+F12`)
-- **Trigger not working** — ensure the combination is not captured by another application
+- **Macro not firing** — check if emergency stop was triggered (`Ctrl+Shift+Alt+F12`), or verify the macro is enabled (green dot in the list)
+- **Macro enabled but not triggering** — ensure the trigger combination is not captured by another application or system shortcut
+- **Controls not resizing properly** — make sure you are using v2.0 or later; earlier builds had a WM_SIZE layout bug when the tab was hidden
 
 ### Enable Logging (for debugging)
 
@@ -239,7 +289,7 @@ Stored next to the executable:
 | `bindings.ini` | Key-to-gamepad bindings |
 | `Layouts/` | Keyboard layout presets (1 file = 1 preset) |
 | `CurvePresets/` | Curve preset files |
-| `*.json` | Macro and combo configurations |
+| `free_combos.dat` | Custom Macro configurations |
 
 ---
 
@@ -267,4 +317,4 @@ MIT — free to use, modify, and redistribute. See [LICENSE](LICENSE).
 
 ---
 
-*DrDre_WASD — Precision Input Automation for Hall Effect Keyboards*
+*DrDre_WASD v2.0 — Precision Input Automation for Hall Effect Keyboards*
