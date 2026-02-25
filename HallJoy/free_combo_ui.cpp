@@ -1158,7 +1158,7 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         return 0;
     }
 
-                       // ── Commands ─────────────────────────────────────────────────
+                    // ── Commands ─────────────────────────────────────────────────
     case WM_COMMAND: {
         WORD ctlId = LOWORD(wParam), notif = HIWORD(wParam);
 
@@ -1228,96 +1228,67 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         int W = LOWORD(lParam), H = HIWORD(lParam);
         if (W < 50 || H < 50) return 0;
 
-        // FIX: On recalcule les positions Y de zero, comme dans CreatePage.
-        // GetWindowRect + MapWindowPoints est INTERDIT ici : quand la page est
-        // cachee (SW_HIDE sur un autre onglet), GetWindowRect retourne {0,0,0,0}
-        // et tous les controles se retrouvent empiles en y=0.
-
-        // ── Constantes identiques a CreatePage ─────────────────────────
+        // Left column: list takes full available height
         const int pad = Sc(hWnd, 10);
         const int lx = Sc(hWnd, 10);
         const int ly = Sc(hWnd, 26);
         const int lw = Sc(hWnd, 220);
         const int btnH = Sc(hWnd, 26);
-        const int rowH = Sc(hWnd, 24);
-        const int rx = Sc(hWnd, 220 + 10 * 2 + 2);
 
-        // Largeur colonne droite : occupe tout l'espace restant
-        int rw = W - rx - Sc(hWnd, 10);
-        if (rw < 120) rw = 120;
-
-        // ── Colonne gauche ──────────────────────────────────────────────
         int listH = H - ly - Sc(hWnd, 6) - btnH - Sc(hWnd, 6);
         if (listH < 60) listH = 60;
-        int bY = ly + listH + Sc(hWnd, 6);
-        int bw2 = (lw - Sc(hWnd, 6)) / 2;
 
         if (g_hComboList) SetWindowPos(g_hComboList, nullptr, lx, ly, lw, listH, SWP_NOZORDER);
+        int bY = ly + listH + Sc(hWnd, 6);
+        int bw2 = (lw - Sc(hWnd, 6)) / 2;
         if (g_hBtnNew)    SetWindowPos(g_hBtnNew, nullptr, lx, bY, bw2, btnH, SWP_NOZORDER);
         if (g_hBtnDelete) SetWindowPos(g_hBtnDelete, nullptr, lx + bw2 + Sc(hWnd, 6), bY, bw2, btnH, SWP_NOZORDER);
 
-        // ── Colonne droite — Y recalcule de zero ───────────────────────
-        int ry = pad;
+        // Right column: stretch width
+        const int rx = Sc(hWnd, 220 + 10 * 2 + 2);
+        int rw = W - rx - Sc(hWnd, 10);
+        if (rw < 120) rw = 120;
 
-        // Nom du combo
-        ry += Sc(hWnd, 16);  // label "COMBO NAME" peint en WM_PAINT
-        if (g_hEditName)     SetWindowPos(g_hEditName, nullptr, rx, ry, rw, rowH, SWP_NOZORDER);
-        ry += rowH + Sc(hWnd, 12);
+        auto ResizeW = [&](HWND h) {
+            if (!h || !IsWindow(h))return;
+            RECT r{}; GetWindowRect(h, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
+            SetWindowPos(h, nullptr, r.left, r.top, rw, r.bottom - r.top, SWP_NOZORDER);
+            };
+        ResizeW(g_hEditName); ResizeW(g_hLblTrigger);
+        ResizeW(g_hActionList); ResizeW(g_hBtnSave);
 
-        // Card Trigger
-        ry += Sc(hWnd, 18);  // label de card peint en WM_PAINT
-        if (g_hLblTrigger)   SetWindowPos(g_hLblTrigger, nullptr, rx, ry, rw, rowH, SWP_NOZORDER);
-        ry += rowH + Sc(hWnd, 6);
-        if (g_hBtnCapture)   SetWindowPos(g_hBtnCapture, nullptr, rx, ry, Sc(hWnd, 204), btnH, SWP_NOZORDER);
-        ry += btnH + Sc(hWnd, 14);
+        if (g_hActionTypeCB) {
+            RECT r{}; GetWindowRect(g_hActionTypeCB, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
+            SetWindowPos(g_hActionTypeCB, nullptr, r.left, r.top, rw - (r.left - rx), r.bottom - r.top, SWP_NOZORDER);
+        }
+        if (g_hActionKeyEdt) ResizeW(g_hActionKeyEdt);
 
-        // Card Options
-        ry += Sc(hWnd, 18);  // label de card peint en WM_PAINT
-        if (g_hChkEnabled)   SetWindowPos(g_hChkEnabled, nullptr, rx, ry, Sc(hWnd, 148), Sc(hWnd, 20), SWP_NOZORDER);
-        if (g_hChkRepeat)    SetWindowPos(g_hChkRepeat, nullptr, rx + Sc(hWnd, 156), ry, Sc(hWnd, 196), Sc(hWnd, 20), SWP_NOZORDER);
-        ry += Sc(hWnd, 26);
+        if (g_hDelaySlider) {
+            RECT r{}; GetWindowRect(g_hDelaySlider, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
+            SetWindowPos(g_hDelaySlider, nullptr, r.left, r.top, rw - Sc(hWnd, 62), r.bottom - r.top, SWP_NOZORDER);
+        }
+        if (g_hDelayValue) {
+            RECT r{}; GetWindowRect(g_hDelayValue, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
+            SetWindowPos(g_hDelayValue, nullptr, rx + rw - Sc(hWnd, 58), r.top, Sc(hWnd, 58), r.bottom - r.top, SWP_NOZORDER);
+        }
 
-        // Ligne delai : label statique (pas redimensionne) | edit | slider | value
-        if (g_hEditDelay)    SetWindowPos(g_hEditDelay, nullptr, rx + Sc(hWnd, 146), ry, Sc(hWnd, 52), rowH, SWP_NOZORDER);
-        ry += rowH + Sc(hWnd, 4);
-        if (g_hDelaySlider)  SetWindowPos(g_hDelaySlider, nullptr, rx, ry, rw - Sc(hWnd, 62), Sc(hWnd, 22), SWP_NOZORDER);
-        if (g_hDelayValue)   SetWindowPos(g_hDelayValue, nullptr, rx + rw - Sc(hWnd, 58), ry, Sc(hWnd, 58), Sc(hWnd, 22), SWP_NOZORDER);
-        ry += Sc(hWnd, 26) + Sc(hWnd, 12);
-
-        // Card Actions
-        ry += Sc(hWnd, 18);  // label de card peint en WM_PAINT
-        if (g_hActionList)   SetWindowPos(g_hActionList, nullptr, rx, ry, rw, Sc(hWnd, 100), SWP_NOZORDER);
-        ry += Sc(hWnd, 106);
-
-        // Type combobox (label "Type:" statique n'est pas redimensionne en X)
-        if (g_hActionTypeCB) SetWindowPos(g_hActionTypeCB, nullptr, rx + Sc(hWnd, 48), ry, rw - Sc(hWnd, 48), rowH, SWP_NOZORDER);
-        ry += rowH + Sc(hWnd, 4);
-
-        // Label "VALUE" (WM_PAINT) + edit valeur
-        ry += Sc(hWnd, 16);
-        if (g_hActionKeyEdt) SetWindowPos(g_hActionKeyEdt, nullptr, rx, ry, rw, rowH, SWP_NOZORDER);
-        ry += rowH + Sc(hWnd, 6);
-
-        // Boutons 3 colonnes : Add / Delay / Del
-        {
+        // 3-column buttons
+        auto ReBtn3 = [&](HWND h, int idx) {
+            if (!h || !IsWindow(h))return;
             int w3 = (rw - Sc(hWnd, 8)) / 3;
-            int g3 = Sc(hWnd, 4);
-            if (g_hBtnAdd)      SetWindowPos(g_hBtnAdd, nullptr, rx, ry, w3, btnH, SWP_NOZORDER);
-            if (g_hBtnAddDelay) SetWindowPos(g_hBtnAddDelay, nullptr, rx + w3 + g3, ry, w3, btnH, SWP_NOZORDER);
-            if (g_hBtnDelAct)   SetWindowPos(g_hBtnDelAct, nullptr, rx + (w3 + g3) * 2, ry, w3, btnH, SWP_NOZORDER);
-        }
-        ry += btnH + Sc(hWnd, 4);
+            RECT r{}; GetWindowRect(h, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
+            SetWindowPos(h, nullptr, rx + idx * (w3 + Sc(hWnd, 4)), r.top, w3, r.bottom - r.top, SWP_NOZORDER);
+            };
+        ReBtn3(g_hBtnAdd, 0); ReBtn3(g_hBtnAddDelay, 1); ReBtn3(g_hBtnDelAct, 2);
 
-        // Boutons 2 colonnes : Up / Down
-        {
+        // 2-column buttons
+        auto ReBtn2 = [&](HWND h, int idx) {
+            if (!h || !IsWindow(h))return;
             int w2 = (rw - Sc(hWnd, 4)) / 2;
-            if (g_hBtnUp)   SetWindowPos(g_hBtnUp, nullptr, rx, ry, w2, btnH, SWP_NOZORDER);
-            if (g_hBtnDown) SetWindowPos(g_hBtnDown, nullptr, rx + w2 + Sc(hWnd, 4), ry, w2, btnH, SWP_NOZORDER);
-        }
-        ry += btnH + Sc(hWnd, 8);
-
-        // Bouton Save (pleine largeur)
-        if (g_hBtnSave) SetWindowPos(g_hBtnSave, nullptr, rx, ry, rw, btnH + Sc(hWnd, 2), SWP_NOZORDER);
+            RECT r{}; GetWindowRect(h, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
+            SetWindowPos(h, nullptr, rx + idx * (w2 + Sc(hWnd, 4)), r.top, w2, r.bottom - r.top, SWP_NOZORDER);
+            };
+        ReBtn2(g_hBtnUp, 0); ReBtn2(g_hBtnDown, 1);
 
         InvalidateRect(hWnd, nullptr, FALSE);
         return 0;
