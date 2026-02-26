@@ -746,6 +746,18 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
     }
 
+    case WM_GETMINMAXINFO:
+    {
+        // Minimum width: keyboard (~840px) + mouse view (~165px) + margins (~15px) = 1020px
+        // Minimum height: keyboard rows + tab panel = 600px
+        // These are WINDOW sizes (client + chrome), ptMinTrackSize works in window coords.
+        MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+        UINT dpiMmi = WinUtil_GetSystemDpiCompat();
+        mmi->ptMinTrackSize.x = MulDiv(1020, (int)dpiMmi, 96);
+        mmi->ptMinTrackSize.y = MulDiv(600, (int)dpiMmi, 96);
+        return 0;
+    }
+
     case WM_SIZE:
         ResizeChildren(hwnd);
         return 0;
@@ -876,14 +888,15 @@ int App_Run(HINSTANCE hInst, int nCmdShow)
     Logger::Info("APP_RUN", "RegisterClassW OK");
 
     UINT dpi = WinUtil_GetSystemDpiCompat();
-    int defaultW = MulDiv(821, (int)dpi, 96);
+    // defaultW includes keyboard (~821px) + mouse view (~172px) + margins
+    int defaultW = MulDiv(1020, (int)dpi, 96);
     int defaultH = MulDiv(832, (int)dpi, 96);
     int w = Settings_GetMainWindowWidthPx();
     int h = Settings_GetMainWindowHeightPx();
     if (w <= 0) w = defaultW;
     if (h <= 0) h = defaultH;
-    int minW = MulDiv(700, (int)dpi, 96);
-    int minH = MulDiv(520, (int)dpi, 96);
+    int minW = MulDiv(1020, (int)dpi, 96);  // keyboard + mouse view, no overlap
+    int minH = MulDiv(600, (int)dpi, 96);
     w = std::max(w, minW);
     h = std::max(h, minH);
     int x = Settings_GetMainWindowPosXPx();
@@ -944,7 +957,3 @@ int App_Run(HINSTANCE hInst, int nCmdShow)
     Logger::Info("APP_RUN", "App_Run termine normalement");
     return (int)msg.wParam;
 }
-
-
-
-

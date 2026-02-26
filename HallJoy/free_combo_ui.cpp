@@ -7,10 +7,10 @@
 //     readable text with key name
 //   • Cards drawn in WM_PAINT (distinct background + small-caps label)
 //     for Trigger, Options, Actions
-//   • Boutons BS_OWNERDRAW premium : Save=bleu, CAPTURE=vert/orange,
-//     Supprimer=rouge, autres=gris neutre, hover + pressed
+//   • Owner-draw buttons: Save=blue, CAPTURE=green/orange,
+//     Delete=red, others=neutral gray, hover + pressed state
 //   • Vertical separator between both columns
-//   • Double-buffer sur WM_PAINT (aucun clignotement)
+//   • Double-buffer in WM_PAINT (no flicker)
 //   • WM_SIZE: left list stretches to use all available space
 //   • Trigger label colored orange during capture
 // ====================================================================
@@ -80,7 +80,7 @@ namespace Pal {
     static constexpr COLORREF BtnGreenBord = RGB(65, 165, 95);
     static constexpr COLORREF BtnOrange = RGB(160, 85, 18);
     static constexpr COLORREF BtnOrangeBord = RGB(230, 140, 55);
-    // Pastilles types d'actions
+    // Action type dot colors
     static constexpr COLORREF ActPress = RGB(70, 150, 255);
     static constexpr COLORREF ActRel = RGB(95, 95, 115);
     static constexpr COLORREF ActTap = RGB(72, 195, 115);
@@ -94,16 +94,152 @@ namespace Pal {
 // Global UI state
 // ────────────────────────────────────────────────────────────────────
 static HWND g_hPage = nullptr;
+
+// ── Scroll state (right column) ──────────────────────────────────
+static int  g_scrollY = 0;   // current scroll offset in px
+static bool g_scrollDrag = false;
+static int  g_scrollDragStartY = 0;
+static int  g_scrollDragStartScrollY = 0;
+static int  g_scrollDragThumbHeight = 0;
+static int  g_scrollDragMax = 0;
+
+static constexpr int SCROLLBAR_W = 6;   // scrollbar width px (96dpi base)
+static constexpr int SCROLLBAR_M = 3;   // scrollbar margin px
+
+static int Sc(HWND h, int px) { return WinUtil_ScalePx(h, px); }
+
+// Content height of the right column (fixed, computed from layout constants)
+static int FC_GetContentHeight(HWND hWnd)
+{
+    // Sum of all rows in the right column (matches WM_SIZE layout)
+    int h = Sc(hWnd, 10)          // pad top
+        + Sc(hWnd, 16)          // COMBO NAME label
+        + Sc(hWnd, 24)          // edit name
+        + Sc(hWnd, 12)          // gap
+        + Sc(hWnd, 18)          // TRIGGER label
+        + Sc(hWnd, 24)          // trigger label ctrl
+        + Sc(hWnd, 6)
+        + Sc(hWnd, 26)          // capture button
+        + Sc(hWnd, 14)
+        + Sc(hWnd, 18)          // OPTIONS label
+        + Sc(hWnd, 26)          // checkboxes
+        + Sc(hWnd, 24)          // delay edit
+        + Sc(hWnd, 4)
+        + Sc(hWnd, 26)          // slider
+        + Sc(hWnd, 12)
+        + Sc(hWnd, 18)          // ACTIONS label
+        + Sc(hWnd, 100)         // action list
+        + Sc(hWnd, 6)           // CB gap
+        + Sc(hWnd, 24)          // type CB
+        + Sc(hWnd, 4)
+        + Sc(hWnd, 16)          // VALUE label
+        + Sc(hWnd, 24)          // value edit
+        + Sc(hWnd, 6)
+        + Sc(hWnd, 26)          // Add/Delay/Delete
+        + Sc(hWnd, 4)
+        + Sc(hWnd, 26)          // Up/Down
+        + Sc(hWnd, 8)
+        + Sc(hWnd, 28)          // Save
+        + Sc(hWnd, 12);         // bottom margin
+    return h;
+}
+
+static int FC_GetMaxScroll(HWND hWnd)
+{
+    RECT rc{}; GetClientRect(hWnd, &rc);
+    int viewH = rc.bottom - rc.top;
+    int contentH = FC_GetContentHeight(hWnd);
+    return std::max(0, contentH - viewH);
+}
+
+static RECT FC_GetScrollTrack(HWND hWnd)
+{
+    RECT rc{}; GetClientRect(hWnd, &rc);
+    int w = Sc(hWnd, SCROLLBAR_W);
+    int m = Sc(hWnd, SCROLLBAR_M);
+    return { rc.right - w - m, m, rc.right - m, rc.bottom - m };
+}
+
+static RECT FC_GetScrollThumb(HWND hWnd)
+{
+    RECT tr = FC_GetScrollTrack(hWnd);
+    int trackH = std::max(1, (int)(tr.bottom - tr.top));
+    RECT rc{}; GetClientRect(hWnd, &rc);
+    int viewH = std::max(1, (int)(rc.bottom - rc.top));
+    int contentH = std::max(1, FC_GetContentHeight(hWnd));
+    int maxScroll = FC_GetMaxScroll(hWnd);
+
+    int thumbH = (int)((double)trackH * viewH / contentH);
+    thumbH = std::clamp(thumbH, Sc(hWnd, 28), trackH);
+
+    int travel = std::max(0, trackH - thumbH);
+    int top = tr.top;
+    if (travel > 0 && maxScroll > 0)
+        top = tr.top + (int)((double)travel * g_scrollY / maxScroll);
+
+    return { tr.left, top, tr.right, top + thumbH };
+}
+
+static void FC_OffsetChildren(HWND hWnd, int dy)
+{
+    if (dy == 0) return;
+    int count = 0;
+    for (HWND c = GetWindow(hWnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) ++count;
+    if (!count) return;
+    HDWP hdwp = BeginDeferWindowPos(count);
+    for (HWND c = GetWindow(hWnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+        RECT rc{}; GetWindowRect(c, &rc); MapWindowPoints(nullptr, hWnd, (LPPOINT)&rc, 2);
+        if (hdwp) hdwp = DeferWindowPos(hdwp, c, nullptr, rc.left, rc.top + dy, 0, 0,
+            SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+        else SetWindowPos(c, nullptr, rc.left, rc.top + dy, 0, 0,
+            SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    if (hdwp) EndDeferWindowPos(hdwp);
+}
+
+static void FC_SetScrollY(HWND hWnd, int newY)
+{
+    int maxScroll = FC_GetMaxScroll(hWnd);
+    int target = std::clamp(newY, 0, maxScroll);
+    if (target == g_scrollY) {
+        InvalidateRect(hWnd, nullptr, FALSE);
+        return;
+    }
+    int dy = g_scrollY - target;  // positive = children move down
+    g_scrollY = target;
+    FC_OffsetChildren(hWnd, dy);
+    RedrawWindow(hWnd, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+
+static void FC_DrawScrollbar(HWND hWnd, HDC hdc)
+{
+    if (FC_GetMaxScroll(hWnd) <= 0) return;
+    RECT tr = FC_GetScrollTrack(hWnd);
+    RECT th = FC_GetScrollThumb(hWnd);
+    // Track
+    HBRUSH brTrack = CreateSolidBrush(RGB(40, 40, 48));
+    FillRect(hdc, &tr, brTrack);
+    DeleteObject(brTrack);
+    // Thumb
+    COLORREF thumbC = g_scrollDrag ? UiTheme::Color_Accent()
+        : RGB(GetRValue(UiTheme::Color_Accent()) * 4 / 5,
+            GetGValue(UiTheme::Color_Accent()) * 4 / 5,
+            GetBValue(UiTheme::Color_Accent()) * 4 / 5);
+    HBRUSH brThumb = CreateSolidBrush(thumbC);
+    FillRect(hdc, &th, brThumb);
+    DeleteObject(brThumb);
+}
 // Left column
 static HWND g_hComboList = nullptr;
 static HWND g_hBtnNew = nullptr;
 static HWND g_hBtnDelete = nullptr;
-// Colonne droite – nom
+// Right column – combo name
 static HWND g_hEditName = nullptr;
 // Trigger card
 static HWND g_hLblTrigger = nullptr;
 static HWND g_hBtnCapture = nullptr;
-// Card Options
+// Options card
 static HWND g_hChkEnabled = nullptr;
 static HWND g_hChkRepeat = nullptr;
 static HWND g_hEditDelay = nullptr;
@@ -113,6 +249,7 @@ static HWND g_hDelayValue = nullptr;
 static HWND g_hActionList = nullptr;
 static HWND g_hActionTypeCB = nullptr;
 static HWND g_hActionKeyEdt = nullptr;
+static HWND g_hBtnCaptureMouse = nullptr; // 🖱 live capture button (visible only for Mouse click type)
 static HWND g_hBtnAdd = nullptr;
 static HWND g_hBtnAddDelay = nullptr;
 static HWND g_hBtnDelAct = nullptr;
@@ -122,6 +259,7 @@ static HWND g_hBtnSave = nullptr;
 
 static bool g_delaySync = false;
 static bool g_capturing = false;
+static bool g_capturingMouseAction = false; // true while capturing a mouse button for an action
 static std::vector<int> g_comboIds;
 static int  g_selectedId = -1;
 
@@ -162,11 +300,13 @@ static void ApplyFontChildren(HWND p)
 {
     HFONT f = GetFont(p);
     if (!f) return;
-    for (HWND c = GetWindow(p, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT))
+    for (HWND c = GetWindow(p, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+        wchar_t cls[32]{};
+        GetClassNameW(c, cls, 32);
+        if (_wcsicmp(cls, L"ComboBox") == 0) continue;
         SendMessageW(c, WM_SETFONT, (WPARAM)f, TRUE);
+    }
 }
-
-static int Sc(HWND h, int px) { return WinUtil_ScalePx(h, px); }
 
 // ────────────────────────────────────────────────────────────────────
 // Data helpers
@@ -241,8 +381,8 @@ static std::wstring ActionLabel(const ComboAction& a)
     case ComboActionType::TapKey:     return L"Tap        " + keyName(a.keyHid);
     case ComboActionType::TypeText:   return L"Text       " + a.text;
     case ComboActionType::MouseClick: {
-        const wchar_t* b[] = { L"left",L"right",L"middle" };
-        return std::wstring(L"Click      ") + b[a.mouseButton < 3 ? a.mouseButton : 0];
+        const wchar_t* b[] = { L"left", L"right", L"middle", L"X1 (thumb)", L"X2 (thumb2)" };
+        return std::wstring(L"Click      ") + b[a.mouseButton < 5 ? a.mouseButton : 0];
     }
     case ComboActionType::Delay: return L"Wait       " + std::to_wstring(a.delayMs) + L" ms";
     default: return L"?";
@@ -378,7 +518,7 @@ static void DrawComboListItem(const DRAWITEMSTRUCT* dis)
     RECT rc = dis->rcItem;
     bool sel = (dis->itemState & ODS_SELECTED) != 0;
 
-    // ── Fond ──────────────────────────────────────────────────────
+    // ── Background ──────────────────────────────────────────────────────
     COLORREF bg = sel ? Pal::ListSel
         : (idx % 2 == 0 ? UiTheme::Color_ControlBg() : Pal::ListAlt);
     HBRUSH brBg = CreateSolidBrush(bg);
@@ -406,13 +546,13 @@ static void DrawComboListItem(const DRAWITEMSTRUCT* dis)
     int cy = (rc.top + rc.bottom) / 2;
     DrawDot(hdc, rc.left + 14, cy, 4, combo->enabled ? Pal::DotActive : Pal::DotInactive);
 
-    // ── Icone clavier / souris ─────────────────────────────────────
+    // ── Keyboard / mouse icon ─────────────────────────────────────
     int iconSz = 14, iconX = rc.left + 26, iconY = cy - iconSz / 2;
     COLORREF iconC = sel ? RGB(190, 215, 255) : UiTheme::Color_TextMuted();
     if (combo->trigger.IsValid())
         (TriggerIsMouse(combo->trigger) ? DrawMouseIcon : DrawKbdIcon)(hdc, iconX, iconY, iconSz, iconC);
 
-    // ── Nom ────────────────────────────────────────────────────────
+    // ── Name ────────────────────────────────────────────────────────
     HFONT oldF = (HFONT)SelectObject(hdc, combo->enabled ? GetFont(dis->hwndItem) : GetFont(dis->hwndItem));
     SetBkMode(hdc, TRANSPARENT);
     // Name in white if active+selected, dimmed if inactive
@@ -506,6 +646,7 @@ static void DrawPremiumButton(const DRAWITEMSTRUCT* dis)
     bool isDel = (id == FreeComboUI::ID_BTN_DELETE || id == FreeComboUI::ID_BTN_DEL_ACTION);
     bool isSave = (id == FreeComboUI::ID_BTN_SAVE);
     bool isCap = (id == FreeComboUI::ID_BTN_CAPTURE);
+    bool isCap2 = (id == FreeComboUI::ID_BTN_CAPTURE_MOUSE); // mouse action capture button
     bool isNew = (id == FreeComboUI::ID_BTN_NEW);
     bool isAdd = (id == FreeComboUI::ID_BTN_ADD_ACTION);
 
@@ -534,6 +675,16 @@ static void DrawPremiumButton(const DRAWITEMSTRUCT* dis)
             bg = prs ? Pal::BtnGreenPres : hot ? Pal::BtnGreenHov : Pal::BtnGreen;
             border = Pal::BtnGreenBord;
             textC = RGB(195, 255, 215);
+        }
+    }
+    else if (isCap2) {
+        // Mouse capture button: orange while capturing, green when idle
+        if (g_capturingMouseAction) {
+            bg = Pal::BtnOrange; border = Pal::BtnOrangeBord; textC = RGB(255, 235, 190);
+        }
+        else {
+            bg = prs ? Pal::BtnGreenPres : hot ? Pal::BtnGreenHov : Pal::BtnGreen;
+            border = Pal::BtnGreenBord; textC = RGB(195, 255, 215);
         }
     }
     else if (isNew || isAdd) {
@@ -600,7 +751,7 @@ static void PaintPage(HWND hWnd, HDC hdc)
         SelectObject(hdc, oldF);
     }
 
-    // ── Label "Nom du combo" ──────────────────────────────────────
+    // ── "Combo name" label ──────────────────────────────────────
     if (g_hEditName && IsWindow(g_hEditName)) {
         RECT r{}; GetWindowRect(g_hEditName, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
         HFONT oldF = (HFONT)SelectObject(hdc, GetSmall(hWnd));
@@ -620,7 +771,7 @@ static void PaintPage(HWND hWnd, HDC hdc)
         }
     }
 
-    // ── Card OPTIONS ─────────────────────────────────────────────
+    // ── OPTIONS card ─────────────────────────────────────────────
     {
         RECT card{};
         if (CardRect(hWnd, g_hChkEnabled, g_hDelayValue, Sc(hWnd, 10), Sc(hWnd, 8), card)) {
@@ -629,7 +780,7 @@ static void PaintPage(HWND hWnd, HDC hdc)
         }
     }
 
-    // ── Card ACTIONS ─────────────────────────────────────────────
+    // ── ACTIONS card ─────────────────────────────────────────────
     {
         RECT card{};
         if (CardRect(hWnd, g_hActionList, g_hBtnSave, Sc(hWnd, 10), Sc(hWnd, 8), card)) {
@@ -638,7 +789,7 @@ static void PaintPage(HWND hWnd, HDC hdc)
         }
     }
 
-    // ── Label "Type / Valeur" section actions ─────────────────────
+    // ── "Type / Value" label section actions ─────────────────────
     if (g_hActionKeyEdt && IsWindow(g_hActionKeyEdt)) {
         RECT r{}; GetWindowRect(g_hActionKeyEdt, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
         HFONT oldF = (HFONT)SelectObject(hdc, GetSmall(hWnd));
@@ -685,6 +836,11 @@ static void UpdateControlsEnabled()
     En(g_hBtnAdd);      En(g_hBtnAddDelay);  En(g_hBtnDelAct);
     En(g_hBtnUp);       En(g_hBtnDown);      En(g_hBtnSave);
     En(g_hBtnDelete);
+    // Mouse capture button: only enabled when "Mouse click" type is selected
+    if (g_hBtnCaptureMouse && IsWindow(g_hBtnCaptureMouse)) {
+        int ti = g_hActionTypeCB ? CB_GETSEL(g_hActionTypeCB) : -1;
+        EnableWindow(g_hBtnCaptureMouse, has && ti == 4);
+    }
 }
 
 static void LoadComboToUI()
@@ -715,7 +871,7 @@ static void EnsureClass(HINSTANCE hInst)
 }
 
 // ────────────────────────────────────────────────────────────────────
-// namespace FreeComboUI  –  public API
+// namespace FreeComboUI  –  public API (end)
 // ────────────────────────────────────────────────────────────────────
 namespace FreeComboUI
 {
@@ -802,11 +958,33 @@ namespace FreeComboUI
             }
             break;
 
+        case ID_BTN_CAPTURE_MOUSE:
+            if (!g_capturingMouseAction) {
+                g_capturingMouseAction = true;
+                SetWindowTextW(g_hBtnCaptureMouse, L"\u23FA ...");
+                EnableWindow(g_hBtnCaptureMouse, FALSE);
+                SetWindowTextW(g_hActionKeyEdt, L"Click a mouse button...");
+                // Disable the Add button during capture to avoid accidental adds
+                EnableWindow(g_hBtnAdd, FALSE);
+                SetTimer(g_hPage, ID_TIMER_MOUSE_CAPTURE, 16, nullptr); // poll at ~60fps
+            }
+            break;
+
         case ID_BTN_ADD_ACTION: {
             if (g_selectedId < 0) break;
             int ti = CB_GETSEL(g_hActionTypeCB); if (ti < 0)break;
             ComboAction action{};
-            action.type = (ComboActionType)(ti + 1);
+            // Map combobox index → ComboActionType using the same order as ActionTypeIdx()
+            // This is safe regardless of enum underlying values
+            static const ComboActionType kTypeMap[] = {
+                ComboActionType::PressKey,   // 0
+                ComboActionType::ReleaseKey, // 1
+                ComboActionType::TapKey,     // 2
+                ComboActionType::TypeText,   // 3
+                ComboActionType::MouseClick, // 4
+                ComboActionType::Delay,      // 5
+            };
+            action.type = (ti >= 0 && ti < 6) ? kTypeMap[ti] : ComboActionType::TapKey;
             wchar_t kbuf[256]{}; GetWindowTextW(g_hActionKeyEdt, kbuf, 256);
 
             if (action.type == ComboActionType::PressKey ||
@@ -836,8 +1014,11 @@ namespace FreeComboUI
             else if (action.type == ComboActionType::Delay)    action.delayMs = _wtoi(kbuf);
             else if (action.type == ComboActionType::TypeText)  action.text = kbuf;
             else if (action.type == ComboActionType::MouseClick) {
-                if (_wcsicmp(kbuf, L"right") == 0)   action.mouseButton = 1;
-                else if (_wcsicmp(kbuf, L"middle") == 0) action.mouseButton = 2;
+                if (_wcsicmp(kbuf, L"right") == 0 || _wcsicmp(kbuf, L"right click") == 0) action.mouseButton = 1;
+                else if (_wcsicmp(kbuf, L"middle") == 0 || _wcsicmp(kbuf, L"middle click") == 0) action.mouseButton = 2;
+                else if (_wcsicmp(kbuf, L"x1") == 0 || _wcsicmp(kbuf, L"x1 (thumb)") == 0) action.mouseButton = 3;
+                else if (_wcsicmp(kbuf, L"x2") == 0 || _wcsicmp(kbuf, L"x2 (thumb2)") == 0) action.mouseButton = 4;
+                // else: left click = 0 (default)
             }
             FreeComboSystem::AddAction(g_selectedId, action);
             RefreshActionList();
@@ -913,18 +1094,18 @@ namespace FreeComboUI
         g_hPage = CreateWindowExW(0, L"FreeComboPage", L"",
             WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, parent, nullptr, hInst, nullptr);
 
-        // ── Layout constants ("base 96dpi" coordinates) ──
-        //    Uses raw integer values; WM_SIZE recalculates everything.
+        // ── Layout constants (base 96dpi coordinates) ──
+        //    Uses raw pixel values; WM_SIZE recalculates everything DPI-aware.
         const int pad = 10;
         const int lw = 220;  // left column width
         const int lx = pad;
         const int ly = 26;   // list start (after the "My combos" label)
-        const int listH = 252;  // hauteur initiale de la liste
+        const int listH = 252;  // initial list height
         const int btnH = 26;
         const int rx = lw + pad * 2 + 2;   // right column start
         const int rw = 352;              // right column width
         const int rowH = 24;
-        const int spad = 8;    // padding interne des sections
+        const int spad = 8;    // inner section padding
 
         // ── Left column ────────────────────────────────────────
         g_hComboList = CreateWindowExW(0, L"LISTBOX", L"",
@@ -941,7 +1122,7 @@ namespace FreeComboUI
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             lx + bw2 + 6, btnY, bw2, btnH, g_hPage, (HMENU)ID_BTN_DELETE, hInst, nullptr);
 
-        // ── Colonne droite ────────────────────────────────────────
+        // ── Right column ────────────────────────────────────────
         int ry = pad;
 
         // Nom
@@ -951,7 +1132,7 @@ namespace FreeComboUI
         ry += rowH + 12;
 
         // ─ Trigger card ─
-        ry += 18; // label de card (WM_PAINT)
+        ry += 18; // card label (drawn in WM_PAINT)
 
         g_hLblTrigger = CreateWindowExW(0, L"STATIC", L"(not configured)",
             WS_CHILD | WS_VISIBLE | SS_CENTER,
@@ -963,7 +1144,7 @@ namespace FreeComboUI
             rx, ry, 204, btnH, g_hPage, (HMENU)ID_BTN_CAPTURE, hInst, nullptr);
         ry += btnH + 14;
 
-        // ─ Card Options ─
+        // ─ Options card ─
         ry += 18;
 
         g_hChkEnabled = CreateWindowExW(0, L"BUTTON", L"Combo enabled",
@@ -994,7 +1175,7 @@ namespace FreeComboUI
             rx + rw - 58, ry, 58, 22, g_hPage, (HMENU)ID_LBL_DELAY_VALUE, hInst, nullptr);
         ry += 26 + 12;
 
-        // ─ Card Actions ─
+        // ─ Actions card ─
         ry += 18;
 
         g_hActionList = CreateWindowExW(0, L"LISTBOX", L"",
@@ -1008,15 +1189,22 @@ namespace FreeComboUI
             rx, ry + 3, 44, 18, g_hPage, nullptr, hInst, nullptr);
         (void)lblType;
         g_hActionTypeCB = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            rx + 48, ry, rw - 48, 200, g_hPage, (HMENU)ID_ACTION_TYPE_CB, hInst, nullptr);
-        for (int i = 0; i < 6; ++i) CB_ADD(g_hActionTypeCB, ACTION_NAMES[i]);
-        CB_SETSEL(g_hActionTypeCB, 2);
+            rx + 48, ry, rw - 48, 300, g_hPage, (HMENU)ID_ACTION_TYPE_CB, hInst, nullptr);
+        // Items added AFTER ApplyFontChildren below — WM_SETFONT on combobox clears items on some Win32 builds
         ry += rowH + 4;
 
-        // Label "VALEUR" (WM_PAINT) + champ edit
+        // Label "VALUE" (WM_PAINT) + value edit + mouse capture button
+        // The mouse capture button (🖱) appears to the right of the value field,
+        // but is only shown when "Mouse click" action type is selected.
         ry += 16;
+        const int kCapW = 30; // width of the 🖱 capture button
         g_hActionKeyEdt = CreateWindowExW(0, L"EDIT", L"P", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            rx, ry, rw, rowH, g_hPage, (HMENU)ID_ACTION_KEY_EDIT, hInst, nullptr);
+            rx, ry, rw - kCapW - 4, rowH, g_hPage, (HMENU)ID_ACTION_KEY_EDIT, hInst, nullptr);
+        // Must create with WS_VISIBLE so BS_OWNERDRAW registers WM_DRAWITEM correctly.
+        // We hide it immediately after — it shows only when "Mouse click" type is selected.
+        g_hBtnCaptureMouse = CreateWindowExW(0, L"BUTTON", L"\U0001F5B1",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            rx + rw - kCapW, ry, kCapW, rowH, g_hPage, (HMENU)ID_BTN_CAPTURE_MOUSE, hInst, nullptr);
         ry += rowH + 6;
 
         // Buttons Add / Delay / Del (3 equal columns)
@@ -1046,13 +1234,21 @@ namespace FreeComboUI
         auto ApplyTheme = [&](HWND h) { if (h) UiTheme::ApplyToControl(h); };
         ApplyTheme(g_hComboList); ApplyTheme(g_hEditName);   ApplyTheme(g_hLblTrigger);
         ApplyTheme(g_hBtnCapture); ApplyTheme(g_hActionList); ApplyTheme(g_hActionTypeCB);
-        ApplyTheme(g_hActionKeyEdt); ApplyTheme(g_hChkRepeat); ApplyTheme(g_hChkEnabled);
+        ApplyTheme(g_hActionKeyEdt); ApplyTheme(g_hBtnCaptureMouse);
+        ApplyTheme(g_hChkRepeat); ApplyTheme(g_hChkEnabled);
         ApplyTheme(g_hEditDelay); ApplyTheme(g_hDelaySlider); ApplyTheme(g_hDelayValue);
 
         ApplyFontChildren(g_hPage);
         ApplyFont(g_hBtnSave, true);
         ApplyFont(g_hBtnCapture, false);
 
+        // Apply font to combobox manually (skipped by ApplyFontChildren) then add items
+        if (HFONT f = GetFont(g_hPage))
+            SendMessageW(g_hActionTypeCB, WM_SETFONT, (WPARAM)f, FALSE);
+        for (int i = 0; i < 6; ++i) CB_ADD(g_hActionTypeCB, ACTION_NAMES[i]);
+        CB_SETSEL(g_hActionTypeCB, 2);
+
+        if (g_hBtnCaptureMouse) ShowWindow(g_hBtnCaptureMouse, SW_HIDE);
         SetDelayUi(400);
         RefreshComboList();
         UpdateControlsEnabled();
@@ -1078,9 +1274,10 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         if (buf.Begin(hdc, rc.right, rc.bottom)) {
             FillRect(buf.mem, &rc, UiTheme::Brush_PanelBg());
             PaintPage(hWnd, buf.mem);
+            FC_DrawScrollbar(hWnd, buf.mem);
             buf.End(hdc, rc.right, rc.bottom);
         }
-        else { PaintPage(hWnd, hdc); }
+        else { PaintPage(hWnd, hdc); FC_DrawScrollbar(hWnd, hdc); }
         EndPaint(hWnd, &ps);
         return 0;
     }
@@ -1158,7 +1355,7 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         return 0;
     }
 
-                    // ── Commands ─────────────────────────────────────────────────
+                       // ── Commands ─────────────────────────────────────────────────
     case WM_COMMAND: {
         WORD ctlId = LOWORD(wParam), notif = HIWORD(wParam);
 
@@ -1202,6 +1399,33 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             }
             return 0;
         }
+        // Show/hide the mouse capture button depending on selected action type
+        if (ctlId == FreeComboUI::ID_ACTION_TYPE_CB && notif == CBN_SELCHANGE) {
+            int ti = CB_GETSEL(g_hActionTypeCB);
+            bool isMouseClick = (ti == 4); // index 4 = Mouse click (0=Press,1=Release,2=Tap,3=Text,4=Mouse,5=Wait)
+            if (g_hBtnCaptureMouse) {
+                ShowWindow(g_hBtnCaptureMouse, isMouseClick ? SW_SHOW : SW_HIDE);
+                // Force repaint of the value row area so the button appears immediately
+                InvalidateRect(g_hPage, nullptr, FALSE);
+                if (isMouseClick) UpdateWindow(g_hBtnCaptureMouse);
+                // Also cancel any in-progress mouse capture if user switched type
+                if (!isMouseClick && g_capturingMouseAction) {
+                    KillTimer(hWnd, FreeComboUI::ID_TIMER_MOUSE_CAPTURE);
+                    g_capturingMouseAction = false;
+                    SetWindowTextW(g_hBtnCaptureMouse, L"\U0001F5B1");
+                    EnableWindow(g_hBtnCaptureMouse, TRUE);
+                    EnableWindow(g_hBtnAdd, TRUE);
+                }
+            }
+            // Clear the value field hint when switching types
+            if (g_hActionKeyEdt) {
+                if (isMouseClick)   SetWindowTextW(g_hActionKeyEdt, L"left");
+                else if (ti == 5)   SetWindowTextW(g_hActionKeyEdt, L"100");   // Wait ms
+                else if (ti == 3)   SetWindowTextW(g_hActionKeyEdt, L"");      // Type text
+                else                SetWindowTextW(g_hActionKeyEdt, L"P");     // Key
+            }
+            return 0;
+        }
         FreeComboUI::OnCommand(hWnd, ctlId, notif);
         return 0;
     }
@@ -1218,9 +1442,36 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         }
         return 0;
 
-        // ── CAPTURE timer ─────────────────────────────────────────────
+        // ── Capture timer ─────────────────────────────────────────────
     case WM_TIMER:
         if (wParam == FreeComboUI::ID_TIMER_CAPTURE) { FreeComboUI::OnTimer(); return 0; }
+        if (wParam == FreeComboUI::ID_TIMER_MOUSE_CAPTURE) {
+            // Poll all 5 mouse buttons — first one detected wins
+            struct { int vk; int btn; const wchar_t* name; } btns[] = {
+                { VK_LBUTTON,  0, L"left"        },
+                { VK_RBUTTON,  1, L"right"       },
+                { VK_MBUTTON,  2, L"middle"      },
+                { VK_XBUTTON1, 3, L"X1 (thumb)"  },
+                { VK_XBUTTON2, 4, L"X2 (thumb2)" },
+            };
+            for (auto& b : btns) {
+                if (GetAsyncKeyState(b.vk) & 0x8000) {
+                    KillTimer(hWnd, FreeComboUI::ID_TIMER_MOUSE_CAPTURE);
+                    g_capturingMouseAction = false;
+                    // Fill the value field with the button name
+                    SetWindowTextW(g_hActionKeyEdt, b.name);
+                    // Restore button states
+                    SetWindowTextW(g_hBtnCaptureMouse, L"\U0001F5B1");
+                    EnableWindow(g_hBtnCaptureMouse, TRUE);
+                    EnableWindow(g_hBtnAdd, TRUE);
+                    // Small visual feedback: flash the edit field selection
+                    SetFocus(g_hActionKeyEdt);
+                    SendMessageW(g_hActionKeyEdt, EM_SETSEL, 0, -1);
+                    break;
+                }
+            }
+            return 0;
+        }
         return 0;
 
         // ── Resize ─────────────────────────────────────────
@@ -1228,13 +1479,14 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         int W = LOWORD(lParam), H = HIWORD(lParam);
         if (W < 50 || H < 50) return 0;
 
-        // Left column: list takes full available height
+        // ── Shared constants ──────────────────────────────────────────
         const int pad = Sc(hWnd, 10);
         const int lx = Sc(hWnd, 10);
         const int ly = Sc(hWnd, 26);
         const int lw = Sc(hWnd, 220);
         const int btnH = Sc(hWnd, 26);
 
+        // ── Left column ──────────────────────────────────────────────
         int listH = H - ly - Sc(hWnd, 6) - btnH - Sc(hWnd, 6);
         if (listH < 60) listH = 60;
 
@@ -1244,59 +1496,178 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         if (g_hBtnNew)    SetWindowPos(g_hBtnNew, nullptr, lx, bY, bw2, btnH, SWP_NOZORDER);
         if (g_hBtnDelete) SetWindowPos(g_hBtnDelete, nullptr, lx + bw2 + Sc(hWnd, 6), bY, bw2, btnH, SWP_NOZORDER);
 
-        // Right column: stretch width
+        // ── Right column — Y recalculated from zero (FIX: no GetWindowRect on hidden window) ──
+        const int rowH = Sc(hWnd, 24);
         const int rx = Sc(hWnd, 220 + 10 * 2 + 2);
         int rw = W - rx - Sc(hWnd, 10);
         if (rw < 120) rw = 120;
 
-        auto ResizeW = [&](HWND h) {
-            if (!h || !IsWindow(h))return;
-            RECT r{}; GetWindowRect(h, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
-            SetWindowPos(h, nullptr, r.left, r.top, rw, r.bottom - r.top, SWP_NOZORDER);
-            };
-        ResizeW(g_hEditName); ResizeW(g_hLblTrigger);
-        ResizeW(g_hActionList); ResizeW(g_hBtnSave);
-
-        if (g_hActionTypeCB) {
-            RECT r{}; GetWindowRect(g_hActionTypeCB, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
-            SetWindowPos(g_hActionTypeCB, nullptr, r.left, r.top, rw - (r.left - rx), r.bottom - r.top, SWP_NOZORDER);
-        }
-        if (g_hActionKeyEdt) ResizeW(g_hActionKeyEdt);
-
-        if (g_hDelaySlider) {
-            RECT r{}; GetWindowRect(g_hDelaySlider, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
-            SetWindowPos(g_hDelaySlider, nullptr, r.left, r.top, rw - Sc(hWnd, 62), r.bottom - r.top, SWP_NOZORDER);
-        }
-        if (g_hDelayValue) {
-            RECT r{}; GetWindowRect(g_hDelayValue, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
-            SetWindowPos(g_hDelayValue, nullptr, rx + rw - Sc(hWnd, 58), r.top, Sc(hWnd, 58), r.bottom - r.top, SWP_NOZORDER);
+        // Reset scroll if content fits
+        if (FC_GetMaxScroll(hWnd) <= 0 && g_scrollY != 0) {
+            FC_OffsetChildren(hWnd, g_scrollY); // move children back to top
+            g_scrollY = 0;
         }
 
-        // 3-column buttons
-        auto ReBtn3 = [&](HWND h, int idx) {
-            if (!h || !IsWindow(h))return;
+        // Scrollbar width reservation
+        const int sbW = Sc(hWnd, SCROLLBAR_W) + Sc(hWnd, SCROLLBAR_M) * 2;
+        rw = W - rx - Sc(hWnd, 12) - sbW; // Reduce rw by 12px for scrollbar
+        if (rw < 120) rw = 120;
+
+        int ry = pad - g_scrollY;  // offset by scroll position
+
+        // Combo name
+        ry += Sc(hWnd, 16);
+        if (g_hEditName)     SetWindowPos(g_hEditName, nullptr, rx, ry, rw, rowH, SWP_NOZORDER);
+        ry += rowH + Sc(hWnd, 12);
+
+        // Trigger card
+        ry += Sc(hWnd, 18);
+        if (g_hLblTrigger)   SetWindowPos(g_hLblTrigger, nullptr, rx, ry, rw, rowH, SWP_NOZORDER);
+        ry += rowH + Sc(hWnd, 6);
+        if (g_hBtnCapture)   SetWindowPos(g_hBtnCapture, nullptr, rx, ry, Sc(hWnd, 204), btnH, SWP_NOZORDER);
+        ry += btnH + Sc(hWnd, 14);
+
+        // Options card
+        ry += Sc(hWnd, 18);
+        if (g_hChkEnabled)   SetWindowPos(g_hChkEnabled, nullptr, rx, ry, Sc(hWnd, 148), Sc(hWnd, 20), SWP_NOZORDER);
+        if (g_hChkRepeat)    SetWindowPos(g_hChkRepeat, nullptr, rx + Sc(hWnd, 156), ry, Sc(hWnd, 196), Sc(hWnd, 20), SWP_NOZORDER);
+        ry += Sc(hWnd, 26);
+        if (g_hEditDelay)    SetWindowPos(g_hEditDelay, nullptr, rx + Sc(hWnd, 146), ry, Sc(hWnd, 52), rowH, SWP_NOZORDER);
+        ry += rowH + Sc(hWnd, 4);
+        if (g_hDelaySlider)  SetWindowPos(g_hDelaySlider, nullptr, rx, ry, rw - Sc(hWnd, 62), Sc(hWnd, 22), SWP_NOZORDER);
+        if (g_hDelayValue)   SetWindowPos(g_hDelayValue, nullptr, rx + rw - Sc(hWnd, 58), ry, Sc(hWnd, 58), Sc(hWnd, 22), SWP_NOZORDER);
+        ry += Sc(hWnd, 26) + Sc(hWnd, 12);
+
+        // Card Actions
+        ry += Sc(hWnd, 18);
+        if (g_hActionList)   SetWindowPos(g_hActionList, nullptr, rx, ry, rw, Sc(hWnd, 100), SWP_NOZORDER);
+        ry += Sc(hWnd, 106);
+        if (g_hActionTypeCB) SetWindowPos(g_hActionTypeCB, nullptr, rx + Sc(hWnd, 48), ry, rw - Sc(hWnd, 48), Sc(hWnd, 200), SWP_NOZORDER);
+        ry += rowH + Sc(hWnd, 4);
+
+        // Value field + mouse capture button (30px wide on the right)
+        ry += Sc(hWnd, 16);
+        {
+            int capW = Sc(hWnd, 30);
+            if (g_hActionKeyEdt)    SetWindowPos(g_hActionKeyEdt, nullptr, rx, ry, rw - capW - Sc(hWnd, 4), rowH, SWP_NOZORDER);
+            if (g_hBtnCaptureMouse) SetWindowPos(g_hBtnCaptureMouse, nullptr, rx + rw - capW, ry, capW, rowH, SWP_NOZORDER);
+        }
+        ry += rowH + Sc(hWnd, 6);
+
+        // 3-column buttons: Add / Delay / Delete
+        {
             int w3 = (rw - Sc(hWnd, 8)) / 3;
-            RECT r{}; GetWindowRect(h, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
-            SetWindowPos(h, nullptr, rx + idx * (w3 + Sc(hWnd, 4)), r.top, w3, r.bottom - r.top, SWP_NOZORDER);
-            };
-        ReBtn3(g_hBtnAdd, 0); ReBtn3(g_hBtnAddDelay, 1); ReBtn3(g_hBtnDelAct, 2);
+            int g3 = Sc(hWnd, 4);
+            if (g_hBtnAdd)      SetWindowPos(g_hBtnAdd, nullptr, rx, ry, w3, btnH, SWP_NOZORDER);
+            if (g_hBtnAddDelay) SetWindowPos(g_hBtnAddDelay, nullptr, rx + w3 + g3, ry, w3, btnH, SWP_NOZORDER);
+            if (g_hBtnDelAct)   SetWindowPos(g_hBtnDelAct, nullptr, rx + (w3 + g3) * 2, ry, w3, btnH, SWP_NOZORDER);
+        }
+        ry += btnH + Sc(hWnd, 4);
 
-        // 2-column buttons
-        auto ReBtn2 = [&](HWND h, int idx) {
-            if (!h || !IsWindow(h))return;
+        // 2-column buttons: Up / Down
+        {
             int w2 = (rw - Sc(hWnd, 4)) / 2;
-            RECT r{}; GetWindowRect(h, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
-            SetWindowPos(h, nullptr, rx + idx * (w2 + Sc(hWnd, 4)), r.top, w2, r.bottom - r.top, SWP_NOZORDER);
-            };
-        ReBtn2(g_hBtnUp, 0); ReBtn2(g_hBtnDown, 1);
+            if (g_hBtnUp)   SetWindowPos(g_hBtnUp, nullptr, rx, ry, w2, btnH, SWP_NOZORDER);
+            if (g_hBtnDown) SetWindowPos(g_hBtnDown, nullptr, rx + w2 + Sc(hWnd, 4), ry, w2, btnH, SWP_NOZORDER);
+        }
+        ry += btnH + Sc(hWnd, 8);
+
+        // Save button (full width)
+        if (g_hBtnSave) SetWindowPos(g_hBtnSave, nullptr, rx, ry, rw, btnH + Sc(hWnd, 2), SWP_NOZORDER);
 
         InvalidateRect(hWnd, nullptr, FALSE);
         return 0;
     }
 
+    case WM_MOUSEWHEEL: {
+        int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        UINT lines = 3;
+        SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+        if (lines == 0 || lines == WHEEL_PAGESCROLL) lines = 3;
+        int step = std::max(Sc(hWnd, 24), (int)lines * Sc(hWnd, 18));
+        FC_SetScrollY(hWnd, g_scrollY - (delta / WHEEL_DELTA) * step);
+        return 0;
+    }
+
+    case WM_LBUTTONDOWN: {
+        POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        if (FC_GetMaxScroll(hWnd) > 0) {
+            RECT thumb = FC_GetScrollThumb(hWnd);
+            RECT track = FC_GetScrollTrack(hWnd);
+            if (PtInRect(&thumb, pt)) {
+                // Start drag
+                g_scrollDrag = true;
+                g_scrollDragStartY = pt.y;
+                g_scrollDragStartScrollY = g_scrollY;
+                g_scrollDragThumbHeight = std::max(1, (int)(thumb.bottom - thumb.top));
+                g_scrollDragMax = FC_GetMaxScroll(hWnd);
+                SetCapture(hWnd);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+            else if (PtInRect(&track, pt)) {
+                // Page up/down on track click
+                RECT clientRc{}; GetClientRect(hWnd, &clientRc);
+                int pageH = clientRc.bottom - clientRc.top;
+                if (pt.y < thumb.top)
+                    FC_SetScrollY(hWnd, g_scrollY - pageH);
+                else
+                    FC_SetScrollY(hWnd, g_scrollY + pageH);
+                return 0;
+            }
+        }
+        break;
+    }
+
+    case WM_MOUSEMOVE: {
+        if (g_scrollDrag) {
+            POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+            RECT track = FC_GetScrollTrack(hWnd);
+            int trackH = std::max(1, (int)(track.bottom - track.top));
+            int maxScroll = std::max(1, g_scrollDragMax);
+            int thumbH = std::max(1, g_scrollDragThumbHeight);
+            int travel = std::max(1, trackH - thumbH);
+            int dy = pt.y - g_scrollDragStartY;
+            double t = (double)dy / (double)travel;
+            int target = g_scrollDragStartScrollY + (int)(t * maxScroll);
+            FC_SetScrollY(hWnd, target);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_LBUTTONUP: {
+        if (g_scrollDrag) {
+            g_scrollDrag = false;
+            ReleaseCapture();
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_CAPTURECHANGED: {
+        if (g_scrollDrag) {
+            g_scrollDrag = false;
+            InvalidateRect(hWnd, nullptr, FALSE);
+        }
+        return 0;
+    }
+
+    case WM_SETCURSOR: {
+        if ((HWND)wParam == hWnd && FC_GetMaxScroll(hWnd) > 0) {
+            POINT pt{};
+            GetCursorPos(&pt); ScreenToClient(hWnd, &pt);
+            RECT thumb = FC_GetScrollThumb(hWnd);
+            RECT track = FC_GetScrollTrack(hWnd);
+            if (PtInRect(&thumb, pt) || PtInRect(&track, pt)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
+        }
+        break;
+    }
+
     } // switch
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
-
-
-
