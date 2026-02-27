@@ -11,6 +11,13 @@ It reads per-key analog values via the Wooting Analog SDK and publishes XInput-c
 ---
 
 
+## 🆕 What's New in DrDre_WASD v2.1
+
+- ✅ **Custom Macro Tab** — free-trigger macro editor replacing the old Combo/Macro tab, fully redesigned with a premium dark UI
+- ✅ **Live mouse layout
+- ✅ **scrollable UI
+
+
 ## 🆕 What's New in v2.0
 
 - ✅ **Custom Macro Tab** — free-trigger macro editor replacing the old Combo/Macro tab, fully redesigned with a premium dark UI
