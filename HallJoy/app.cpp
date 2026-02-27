@@ -563,7 +563,16 @@ static LRESULT CALLBACK KeyboardBlockHookProc(int nCode, WPARAM wParam, LPARAM l
             if (kfc && !(kfc->flags & LLKHF_INJECTED) && kfc->dwExtraInfo != (ULONG_PTR)0x484A4D43ULL)
             {
                 if (FreeComboSystem::ProcessKeyboardEvent((UINT)wParam, (WPARAM)kfc->vkCode, lParam))
-                    return 1; // block trigger key passthrough when a free combo consumes it
+                {
+                    // Only block the trigger key from reaching the game if it is also
+                    // mapped to an Xbox button. If it is a pure keyboard key (not bound),
+                    // let it pass through so the game receives it normally.
+                    const bool ext2 = (kfc->flags & LLKHF_EXTENDED) != 0;
+                    uint16_t hid2 = HidFromKeyboardScanCode(kfc->scanCode, ext2, kfc->vkCode);
+                    if (hid2 != 0 && Bindings_IsHidBound(hid2))
+                        return 1; // bound to Xbox → block, ViGEm handles it
+                    // else: pure keyboard trigger → fall through, game sees the key
+                }
             }
         }
 

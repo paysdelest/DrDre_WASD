@@ -44,7 +44,9 @@ namespace FreeComboUI
         ID_SLIDER_DELAY = 2018,
         ID_LBL_DELAY_VALUE = 2019,
         ID_BTN_ADD_DELAY = 2020,
-        ID_BTN_CAPTURE_MOUSE = 2021,  // Live capture mouse button for action value
+        ID_BTN_CAPTURE_MOUSE  = 2021,  // Live capture mouse button for action value
+        ID_CHK_CANCEL_RELEASE = 2022,  // Cancel on release
+        ID_EDIT_REPEAT_COUNT  = 2023,  // Run N times
         ID_TIMER_CAPTURE = 2099,
         ID_TIMER_MOUSE_CAPTURE = 2098,  // Poll mouse during action capture
     };

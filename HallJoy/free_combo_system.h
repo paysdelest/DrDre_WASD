@@ -64,6 +64,8 @@ struct FreeCombo
     uint32_t                repeatDelayMs   = 400;
     DWORD                   lastExecTime    = 0;
     bool                    isExample       = false; // Marked as first-run example
+    uint32_t                repeatCount     = 0;     // 0 = infinite (while held), N = run exactly N times
+    bool                    cancelOnRelease = false; // Stop sequence if trigger released mid-run
 };
 
 // Free combo management system
@@ -91,7 +93,10 @@ namespace FreeComboSystem
 
     // Options
     bool SetEnabled(int id, bool enabled);
+    bool SwapCombos(int idA, int idB); // swap two combos in the internal list (for drag & drop reorder)
     bool SetRepeat(int id, bool repeat, uint32_t delayMs);
+    bool SetRepeatCount(int id, uint32_t count);
+    bool SetCancelOnRelease(int id, bool cancel);
 
     // Trigger capture
     // Call StartCapture(), wait until IsCaptureComplete() is true,
@@ -100,6 +105,7 @@ namespace FreeComboSystem
     void StopCapture();
     bool IsCapturing();
     bool IsCaptureComplete();
+    BYTE GetInjectedMouseState(); // macro-injected mouse buttons for live view (bit 0=L,1=R,2=M,3=X1,4=X2)
     FreeTrigger GetCapturedTrigger();
     bool IsCaptureWaitingSecondInput();
     FreeTrigger GetCaptureFirstInput();

@@ -1,5 +1,6 @@
 #include "free_combo_system.h"
 #include "backend.h"
+#include "bindings.h"  // Bindings_IsHidBound — used to decide ViGEm vs pure SendInput
 #include <windows.h>
 #include <vector>
 #include <mutex>
@@ -36,6 +37,15 @@ static bool ReadLine(FILE* f, std::wstring& out)
 // FREE COMBO SYSTEM - DrDre_WASD v2.0
 // ============================================================
 
+// QueueItem must be fully defined before the anonymous namespace (std::queue<QueueItem> needs complete type)
+struct QueueItem {
+    std::vector<ComboAction> actions;
+    uint32_t repeatCount     = 0;
+    uint32_t repeatDelayMs  = 0;
+    bool     cancelOnRelease = false;
+    FreeTrigger trigger;
+};
+
 // --- VARIABLES INTERNES ---
 namespace {
     std::vector<FreeCombo>          g_combos;
@@ -47,7 +57,48 @@ namespace {
     std::atomic<bool> g_altHeld = false;
     std::atomic<bool> g_winHeld = false;
 
-    // Mouse state
+    
+    // Physical key held state (independent of lParam repeat bit; avoids key auto-repeat bursts)
+    // 256 VKs -> 4x64-bit bitset
+    std::atomic<unsigned long long> g_keyHeldBits0{0};
+    std::atomic<unsigned long long> g_keyHeldBits1{0};
+    std::atomic<unsigned long long> g_keyHeldBits2{0};
+    std::atomic<unsigned long long> g_keyHeldBits3{0};
+
+    static inline bool FC_IsKeyHeld(WORD vk) {
+        unsigned idx = (unsigned)vk;
+        unsigned bucket = idx >> 6; // /64
+        unsigned bit = idx & 63;
+        unsigned long long mask = 1ULL << bit;
+        switch (bucket) {
+        case 0: return (g_keyHeldBits0.load(std::memory_order_relaxed) & mask) != 0;
+        case 1: return (g_keyHeldBits1.load(std::memory_order_relaxed) & mask) != 0;
+        case 2: return (g_keyHeldBits2.load(std::memory_order_relaxed) & mask) != 0;
+        default:return (g_keyHeldBits3.load(std::memory_order_relaxed) & mask) != 0;
+        }
+    }
+
+    static inline void FC_SetKeyHeld(WORD vk, bool held) {
+        unsigned idx = (unsigned)vk;
+        unsigned bucket = idx >> 6;
+        unsigned bit = idx & 63;
+        unsigned long long mask = 1ULL << bit;
+        auto setBits = [&](std::atomic<unsigned long long>& bits) {
+            unsigned long long cur = bits.load(std::memory_order_relaxed);
+            for (;;) {
+                unsigned long long next = held ? (cur | mask) : (cur & ~mask);
+                if (bits.compare_exchange_weak(cur, next, std::memory_order_relaxed, std::memory_order_relaxed))
+                    break;
+            }
+        };
+        switch (bucket) {
+        case 0: setBits(g_keyHeldBits0); break;
+        case 1: setBits(g_keyHeldBits1); break;
+        case 2: setBits(g_keyHeldBits2); break;
+        default:setBits(g_keyHeldBits3); break;
+        }
+    }
+// Mouse state
     std::atomic<bool> g_leftHeld = false;
     std::atomic<bool> g_rightHeld = false;
     std::atomic<bool> g_middleHeld = false;
@@ -55,9 +106,14 @@ namespace {
     std::atomic<DWORD> g_lastRightDownTick = 0;
 
     // Worker thread (reuses the same logic as MouseComboSystem)
+    // Injected mouse button state — set by macro SendInput, read by mouse view
+    // Bit 0=L, 1=R, 2=M, 3=X1, 4=X2
+    std::atomic<BYTE> g_injectedMouseState{ 0 };
+    std::atomic<bool> g_cancelCurrent{ false };
+
     std::thread             g_worker;
     std::atomic<bool>       g_workerRunning = false;
-    std::queue<std::vector<ComboAction>> g_queue;
+    std::queue<QueueItem> g_queue;
     std::mutex              g_queueMutex;
     std::condition_variable g_queueCv;
 
@@ -249,77 +305,101 @@ static bool HandleCAPTUREInput(FreeTriggerKeyType keyType, WORD vkCode)
 }
 
 // --- WORKER THREAD ---
+static bool ExecAction(const ComboAction& action)
+{
+    if (g_cancelCurrent.load(std::memory_order_relaxed)) return false;
+    if (action.type == ComboActionType::Delay) {
+        DWORD end = GetTickCount() + action.delayMs;
+        while (GetTickCount() < end) {
+            if (g_cancelCurrent.load(std::memory_order_relaxed)) return false;
+            Sleep(8);
+        }
+        return true;
+    }
+    if (action.type == ComboActionType::PressKey ||
+        action.type == ComboActionType::ReleaseKey ||
+        action.type == ComboActionType::TapKey)
+    {
+        WORD vk = HidToVk(action.keyHid);
+        const bool vigemRoute = Bindings_IsHidBound(action.keyHid);
+        auto MakeKeyInput = [&](WORD wVk, DWORD flags) -> INPUT {
+            INPUT i{}; i.type=INPUT_KEYBOARD; i.ki.wVk=wVk;
+            i.ki.wScan=(WORD)MapVirtualKeyW(wVk,MAPVK_VK_TO_VSC);
+            i.ki.dwFlags=flags|KEYEVENTF_SCANCODE;
+            i.ki.dwExtraInfo=(ULONG_PTR)0x484A4D43ULL; return i;
+        };
+        if (action.type == ComboActionType::PressKey) {
+            if (vigemRoute) { BackendUI_SetAnalogMilli(action.keyHid,1000); Backend_SetMacroAnalog(action.keyHid,1000.0f); }
+            INPUT i=MakeKeyInput(vk,0); SendInput(1,&i,sizeof(INPUT));
+        } else if (action.type == ComboActionType::ReleaseKey) {
+            INPUT i=MakeKeyInput(vk,KEYEVENTF_KEYUP); SendInput(1,&i,sizeof(INPUT));
+            if (vigemRoute) { BackendUI_SetAnalogMilli(action.keyHid,0); Backend_ClearMacroAnalog(action.keyHid); }
+        } else {
+            if (vigemRoute) Backend_SetMacroAnalogForMs(action.keyHid,1.0f,120);
+            INPUT iD=MakeKeyInput(vk,0), iU=MakeKeyInput(vk,KEYEVENTF_KEYUP);
+            SendInput(1,&iD,sizeof(INPUT)); Sleep(30); SendInput(1,&iU,sizeof(INPUT));
+        }
+    } else if (action.type == ComboActionType::MouseClick) {
+        INPUT inp[2]={}; DWORD dF=0,uF=0,xb=0; BYTE vb=0;
+        switch(action.mouseButton){
+        case 0:dF=MOUSEEVENTF_LEFTDOWN;  uF=MOUSEEVENTF_LEFTUP;  vb=(1<<0);break;
+        case 1:dF=MOUSEEVENTF_RIGHTDOWN; uF=MOUSEEVENTF_RIGHTUP; vb=(1<<1);break;
+        case 2:dF=MOUSEEVENTF_MIDDLEDOWN;uF=MOUSEEVENTF_MIDDLEUP;vb=(1<<2);break;
+        case 3:dF=MOUSEEVENTF_XDOWN;uF=MOUSEEVENTF_XUP;xb=XBUTTON1;vb=(1<<3);break;
+        case 4:dF=MOUSEEVENTF_XDOWN;uF=MOUSEEVENTF_XUP;xb=XBUTTON2;vb=(1<<4);break;
+        }
+        if(dF){inp[0].type=INPUT_MOUSE;inp[0].mi.dwFlags=dF;inp[0].mi.mouseData=xb;
+               inp[1].type=INPUT_MOUSE;inp[1].mi.dwFlags=uF;inp[1].mi.mouseData=xb;
+               g_injectedMouseState.fetch_or(vb,std::memory_order_relaxed);
+               SendInput(2,inp,sizeof(INPUT)); Sleep(30);
+               g_injectedMouseState.fetch_and((BYTE)~vb,std::memory_order_relaxed);}
+    } else if (action.type == ComboActionType::TypeText) {
+        for (wchar_t ch : action.text) {
+            if (g_cancelCurrent.load(std::memory_order_relaxed)) return false;
+            INPUT inp[2]={}; inp[0].type=INPUT_KEYBOARD; inp[0].ki.wScan=ch;
+            inp[0].ki.dwFlags=KEYEVENTF_UNICODE; inp[1]=inp[0]; inp[1].ki.dwFlags|=KEYEVENTF_KEYUP;
+            SendInput(2,inp,sizeof(INPUT)); Sleep(10);
+        }
+    }
+    if (action.type != ComboActionType::Delay) Sleep(10);
+    return !g_cancelCurrent.load(std::memory_order_relaxed);
+}
+
+static bool SleepCancelableMs(uint32_t ms)
+{
+    if (ms == 0) return !g_cancelCurrent.load(std::memory_order_relaxed);
+    DWORD start = GetTickCount();
+    while (true) {
+        if (g_cancelCurrent.load(std::memory_order_relaxed)) return false;
+        DWORD now = GetTickCount();
+        if ((uint32_t)(now - start) >= ms) return true;
+        Sleep(1);
+    }
+}
+
 static void WorkerFunc()
 {
     while (g_workerRunning) {
-        std::vector<ComboAction> actions;
+        QueueItem item;
         {
             std::unique_lock<std::mutex> lock(g_queueMutex);
             g_queueCv.wait(lock, [] { return !g_queue.empty() || !g_workerRunning; });
             if (!g_workerRunning && g_queue.empty()) break;
-            if (!g_queue.empty()) { actions = g_queue.front(); g_queue.pop(); }
+            if (!g_queue.empty()) { item = g_queue.front(); g_queue.pop(); }
         }
+        if (item.actions.empty()) continue;
+        g_cancelCurrent.store(false, std::memory_order_relaxed);
+        uint32_t runs = (item.repeatCount == 0) ? 1 : item.repeatCount;
+        for (uint32_t r = 0; r < runs; ++r) {
+            for (const auto& action : item.actions)
+                if (!ExecAction(action)) goto done;
 
-        for (const auto& action : actions) {
-            if (action.type == ComboActionType::Delay) {
-                Sleep(action.delayMs);
-                continue;
+            // If user requested "Run N times", respect the configured repeat delay between runs
+            if (r + 1 < runs && item.repeatCount > 1 && item.repeatDelayMs > 0) {
+                if (!SleepCancelableMs(item.repeatDelayMs)) goto done;
             }
-            if (action.type == ComboActionType::PressKey ||
-                action.type == ComboActionType::ReleaseKey ||
-                action.type == ComboActionType::TapKey)
-            {
-                INPUT inp[1] = {};
-                WORD vk = HidToVk(action.keyHid);
-
-                if (action.type == ComboActionType::PressKey) {
-                    BackendUI_SetAnalogMilli(action.keyHid, 1000);
-                    Backend_SetMacroAnalog(action.keyHid, 1000.0f);
-                    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wVk = vk;
-                    SendInput(1, inp, sizeof(INPUT));
-                }
-                else if (action.type == ComboActionType::ReleaseKey) {
-                    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wVk = vk;
-                    inp[0].ki.dwFlags = KEYEVENTF_KEYUP;
-                    SendInput(1, inp, sizeof(INPUT));
-                    BackendUI_SetAnalogMilli(action.keyHid, 0);
-                    Backend_ClearMacroAnalog(action.keyHid);
-                }
-                else { // TapKey
-                    Backend_SetMacroAnalogForMs(action.keyHid, 1.0f, 120);
-                    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wVk = vk;
-                    SendInput(1, inp, sizeof(INPUT));
-                    Sleep(30);
-                    inp[0].ki.dwFlags = KEYEVENTF_KEYUP;
-                    SendInput(1, inp, sizeof(INPUT));
-                }
-            }
-            else if (action.type == ComboActionType::MouseClick) {
-                INPUT inp[2] = {};
-                DWORD downFlag = 0, upFlag = 0;
-                switch (action.mouseButton) {
-                case 0: downFlag = MOUSEEVENTF_LEFTDOWN;   upFlag = MOUSEEVENTF_LEFTUP;   break;
-                case 1: downFlag = MOUSEEVENTF_RIGHTDOWN;  upFlag = MOUSEEVENTF_RIGHTUP;  break;
-                case 2: downFlag = MOUSEEVENTF_MIDDLEDOWN; upFlag = MOUSEEVENTF_MIDDLEUP; break;
-                }
-                if (downFlag) {
-                    inp[0].type = INPUT_MOUSE; inp[0].mi.dwFlags = downFlag;
-                    inp[1].type = INPUT_MOUSE; inp[1].mi.dwFlags = upFlag;
-                    SendInput(2, inp, sizeof(INPUT));
-                }
-            }
-            else if (action.type == ComboActionType::TypeText) {
-                for (wchar_t c : action.text) {
-                    INPUT inp[2] = {};
-                    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wVk = 0;
-                    inp[0].ki.wScan = c; inp[0].ki.dwFlags = KEYEVENTF_UNICODE;
-                    inp[1] = inp[0]; inp[1].ki.dwFlags |= KEYEVENTF_KEYUP;
-                    SendInput(2, inp, sizeof(INPUT));
-                    Sleep(10);
-                }
-            }
-            if (action.type != ComboActionType::Delay) Sleep(10);
         }
+        done:;
     }
 }
 
@@ -347,9 +427,15 @@ static bool TriggerExtraConditionsMatch(const FreeTrigger& trigger)
 // --- Trigger combo ---
 static void FireCombo(FreeCombo& combo)
 {
+    QueueItem item;
+    item.actions         = combo.actions;
+    item.repeatCount     = combo.repeatCount;
+    item.repeatDelayMs  = combo.repeatDelayMs;
+    item.cancelOnRelease = combo.cancelOnRelease;
+    item.trigger         = combo.trigger;
     {
         std::lock_guard<std::mutex> qLock(g_queueMutex);
-        g_queue.push(combo.actions);
+        g_queue.push(std::move(item));
     }
     g_queueCv.notify_one();
     combo.lastExecTime = GetTickCount();
@@ -417,6 +503,15 @@ namespace FreeComboSystem
     {
         std::lock_guard<std::mutex> lock(g_comboMutex);
         return (int)g_combos.size();
+    }
+
+    bool SwapCombos(int idA, int idB)
+    {
+        std::lock_guard<std::mutex> lock(g_comboMutex);
+        if (idA < 0 || idA >= (int)g_combos.size()) return false;
+        if (idB < 0 || idB >= (int)g_combos.size()) return false;
+        std::swap(g_combos[(size_t)idA], g_combos[(size_t)idB]);
+        return true;
     }
 
     bool AddAction(int id, const ComboAction& action)
@@ -489,6 +584,20 @@ namespace FreeComboSystem
         g_combos[id].repeatDelayMs = delayMs;
         return true;
     }
+    bool SetRepeatCount(int id, uint32_t count)
+    {
+        std::lock_guard<std::mutex> lock(g_comboMutex);
+        if (id < 0 || id >= (int)g_combos.size()) return false;
+        g_combos[id].repeatCount = count;
+        return true;
+    }
+    bool SetCancelOnRelease(int id, bool cancel)
+    {
+        std::lock_guard<std::mutex> lock(g_comboMutex);
+        if (id < 0 || id >= (int)g_combos.size()) return false;
+        g_combos[id].cancelOnRelease = cancel;
+        return true;
+    }
 
     // --- CAPTURE ---
     void StartCapture()
@@ -513,6 +622,11 @@ namespace FreeComboSystem
     }
 
     bool IsCapturing() { return g_capturing; }
+
+    BYTE GetInjectedMouseState()
+    {
+        return g_injectedMouseState.load(std::memory_order_relaxed);
+    }
     bool IsCaptureComplete()
     {
         std::lock_guard<std::mutex> lock(g_CAPTUREMutex);
@@ -631,7 +745,19 @@ namespace FreeComboSystem
         bool isDown = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
         bool isUp = (msg == WM_KEYUP || msg == WM_SYSKEYUP);
 
-        // Update modifiers
+        
+        // Track physical held state to suppress OS auto-repeat bursts (works even if lParam repeat bit is unreliable)
+        if (isDown) {
+            if (FC_IsKeyHeld(vk)) {
+                // already held -> ignore repeated keydown
+                return false;
+            }
+            FC_SetKeyHeld(vk, true);
+        }
+        else if (isUp) {
+            FC_SetKeyHeld(vk, false);
+        }
+// Update modifiers
         if (vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL)
             g_ctrlHeld = isDown;
         else if (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT)
@@ -682,6 +808,8 @@ namespace FreeComboSystem
             if (held)
                 held = TriggerExtraConditionsMatch(combo.trigger);
 
+            if (combo.cancelOnRelease && !held)
+                g_cancelCurrent.store(true, std::memory_order_relaxed);
             if (held && (now - combo.lastExecTime >= combo.repeatDelayMs)) {
                 FireCombo(combo);
             }
@@ -720,7 +848,7 @@ namespace FreeComboSystem
         FILE* f = nullptr;
         if (_wfopen_s(&f, path, L"w") != 0 || !f) return false;
 
-        fwprintf(f, L"DRDRE_FREECOMBOS_V3\n");
+        fwprintf(f, L"DRDRE_FREECOMBOS_V4\n");
         fwprintf(f, L"%u\n", (unsigned)g_combos.size());
 
         for (const auto& combo : g_combos) {
@@ -731,11 +859,13 @@ namespace FreeComboSystem
                 (int)combo.trigger.vkCode,
                 (int)combo.trigger.holdKeyType,
                 (int)combo.trigger.holdVkCode);
-            fwprintf(f, L"%d %d %d %d\n",
+            fwprintf(f, L"%d %d %d %d %u %d\n",
                 combo.enabled ? 1 : 0,
                 combo.repeatWhileHeld ? 1 : 0,
                 combo.repeatDelayMs,
-                combo.isExample ? 1 : 0);
+                combo.isExample ? 1 : 0,
+                combo.repeatCount,
+                combo.cancelOnRelease ? 1 : 0);
             fwprintf(f, L"%u\n", (unsigned)combo.actions.size());
             for (const auto& action : combo.actions) {
                 std::wstring textLine = action.text;
@@ -763,7 +893,9 @@ namespace FreeComboSystem
         if (!ReadLine(f, line)) { fclose(f); return false; }
         bool isV3 = false;
         bool isV2 = false;
-        if (line == L"DRDRE_FREECOMBOS_V3") isV3 = true;
+        bool isV4 = false;
+        if (line == L"DRDRE_FREECOMBOS_V4") { isV4 = true; isV3 = true; }
+        else if (line == L"DRDRE_FREECOMBOS_V3") isV3 = true;
         else if (line == L"DRDRE_FREECOMBOS_V2") isV2 = true;
         else if (line == L"DRDRE_FREECOMBOS_V1") {}
         else { fclose(f); return false; }
@@ -799,15 +931,16 @@ namespace FreeComboSystem
             combo.trigger.holdKeyType = (FreeTriggerKeyType)holdKeyType;
             combo.trigger.holdVkCode = (WORD)holdVk;
 
-            int en = 0, rep = 0, del = 0, isEx = 0;
-            if (!ReadLine(f, line) || swscanf_s(line.c_str(), L"%d %d %d %d", &en, &rep, &del, &isEx) != 4)
-            {
-                parseOk = false; break;
-            }
+            int en = 0, rep = 0, del = 0, isEx = 0; unsigned rcount = 0; int crel = 0;
+            if (!ReadLine(f, line)) { parseOk = false; break; }
+            if (isV4) swscanf_s(line.c_str(), L"%d %d %d %d %u %d", &en,&rep,&del,&isEx,&rcount,&crel);
+            else      swscanf_s(line.c_str(), L"%d %d %d %d", &en,&rep,&del,&isEx);
             combo.enabled = (en != 0);
             combo.repeatWhileHeld = (rep != 0);
             combo.repeatDelayMs = del;
             combo.isExample = (isEx != 0);
+            combo.repeatCount = rcount;
+            combo.cancelOnRelease = (crel != 0);
 
             unsigned actionCountU = 0;
             if (!ReadLine(f, line) || swscanf_s(line.c_str(), L"%u", &actionCountU) != 1)

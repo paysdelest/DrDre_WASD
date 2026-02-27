@@ -123,6 +123,8 @@ static int FC_GetContentHeight(HWND hWnd)
         + Sc(hWnd, 14)
         + Sc(hWnd, 18)          // OPTIONS label
         + Sc(hWnd, 26)          // checkboxes
+        + Sc(hWnd, 24)          // Run N times row (edit + cancel)
+        + Sc(hWnd, 4)
         + Sc(hWnd, 24)          // delay edit
         + Sc(hWnd, 4)
         + Sc(hWnd, 26)          // slider
@@ -240,8 +242,10 @@ static HWND g_hEditName = nullptr;
 static HWND g_hLblTrigger = nullptr;
 static HWND g_hBtnCapture = nullptr;
 // Options card
-static HWND g_hChkEnabled = nullptr;
-static HWND g_hChkRepeat = nullptr;
+static HWND g_hChkEnabled      = nullptr;
+static HWND g_hChkRepeat       = nullptr;
+static HWND g_hChkCancelRel    = nullptr;  // Cancel on release
+static HWND g_hEditRepeatCount = nullptr;  // Run N times (0=inf)
 static HWND g_hEditDelay = nullptr;
 static HWND g_hDelaySlider = nullptr;
 static HWND g_hDelayValue = nullptr;
@@ -259,9 +263,33 @@ static HWND g_hBtnSave = nullptr;
 
 static bool g_delaySync = false;
 static bool g_capturing = false;
-static bool g_capturingMouseAction = false; // true while capturing a mouse button for an action
+static bool  g_capturingMouseAction = false;
+static DWORD g_captureGraceUntil   = 0;
 static std::vector<int> g_comboIds;
 static int  g_selectedId = -1;
+
+// ── Drag & drop — combo list (left column) ───────────────────
+static bool  g_comboDrag        = false;
+static int   g_comboDragSrcIdx  = -1;   // list index being dragged
+static int   g_comboDragHover   = -1;   // current drop target index
+static POINT g_comboDragPt      = {};
+
+// ── Drag & drop — action list (right column) ─────────────────
+static bool  g_actionDrag       = false;
+static int   g_actionDragSrcIdx = -1;
+static int   g_actionDragHover  = -1;
+static POINT g_actionDragPt     = {};
+
+// Width reserved for [x] button drawn inside each action row
+static constexpr int kActionDelW = 22; // px at 96dpi (scaled at runtime)
+
+// ── Subclass procs pour détecter clic/drag dans les listbox ──
+static WNDPROC g_origActionListProc = nullptr;
+static WNDPROC g_origComboListProc  = nullptr;
+static HWND    g_hPageForSubclass   = nullptr; // référence à la fenêtre parente
+
+static LRESULT CALLBACK ActionListSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static LRESULT CALLBACK ComboListSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // ────────────────────────────────────────────────────────────────────
 // Action type names + dot colors
@@ -552,28 +580,48 @@ static void DrawComboListItem(const DRAWITEMSTRUCT* dis)
     if (combo->trigger.IsValid())
         (TriggerIsMouse(combo->trigger) ? DrawMouseIcon : DrawKbdIcon)(hdc, iconX, iconY, iconSz, iconC);
 
-    // ── Name ────────────────────────────────────────────────────────
-    HFONT oldF = (HFONT)SelectObject(hdc, combo->enabled ? GetFont(dis->hwndItem) : GetFont(dis->hwndItem));
+    // ── Name (top half) + Trigger preview (bottom half) ─────────────
+    int rowH2 = (rc.bottom - rc.top) / 2;
+    HFONT oldF = (HFONT)SelectObject(hdc, GetFont(dis->hwndItem));
     SetBkMode(hdc, TRANSPARENT);
-    // Name in white if active+selected, dimmed if inactive
     SetTextColor(hdc,
         !combo->enabled ? RGB(100, 100, 115) :
         sel ? RGB(235, 245, 255) :
         UiTheme::Color_Text());
-    RECT tr{ iconX + iconSz + 7, rc.top, rc.right - 6, rc.bottom };
-    DrawTextW(hdc, combo->name.c_str(), -1, &tr,
+    RECT trName{ iconX + iconSz + 7, rc.top, rc.right - 6, rc.top + rowH2 };
+    DrawTextW(hdc, combo->name.c_str(), -1, &trName,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-    // Badge "(inactive)" in small font on the right if disabled and not selected
+    // Trigger string in small greyed font below the name
+    SelectObject(hdc, GetSmall(dis->hwndItem));
+    SetTextColor(hdc, sel ? RGB(150, 185, 225) : UiTheme::Color_TextMuted());
+    {
+        std::wstring tstr = combo->trigger.IsValid()
+            ? combo->trigger.ToString() : L"(no trigger)";
+        RECT trTrig{ iconX + iconSz + 7, rc.top + rowH2, rc.right - 6, rc.bottom - 1 };
+        DrawTextW(hdc, tstr.c_str(), -1, &trTrig,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    // Badge "(inactive)" top-right if disabled and not selected
     if (!combo->enabled && !sel) {
         SelectObject(hdc, GetSmall(dis->hwndItem));
         SetTextColor(hdc, Pal::DotInactive);
-        RECT br2{ rc.right - 62,rc.top,rc.right - 4,rc.bottom };
+        RECT br2{ rc.right - 62, rc.top, rc.right - 4, rc.top + rowH2 };
         DrawTextW(hdc, L"(inactive)", -1, &br2, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
 
     SelectObject(hdc, oldF);
     if (dis->itemState & ODS_FOCUS) DrawFocusRect(hdc, &rc);
+
+    // Drag & drop indicator — draw a blue line above the drop target
+    if (g_comboDrag && g_comboDragHover == idx) {
+        HPEN hp = CreatePen(PS_SOLID, 2, RGB(80, 160, 255));
+        HGDIOBJ op2 = SelectObject(hdc, hp);
+        MoveToEx(hdc, rc.left + 4, rc.top + 1, nullptr);
+        LineTo(hdc, rc.right - 4, rc.top + 1);
+        SelectObject(hdc, op2); DeleteObject(hp);
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -619,15 +667,48 @@ static void DrawActionItem(const DRAWITEMSTRUCT* dis)
     RECT nr{ rc.left + 20,rc.top,rc.left + 38,rc.bottom };
     DrawTextW(hdc, num, -1, &nr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
-    // Texte de l'action
+    // Texte de l'action (leave room for [x] on the right)
     SelectObject(hdc, GetFont(dis->hwndItem));
     SetTextColor(hdc, sel ? RGB(220, 238, 255) : UiTheme::Color_Text());
-    RECT tr{ rc.left + 42,rc.top,rc.right - 6,rc.bottom };
+    RECT tr{ rc.left + 42, rc.top, rc.right - kActionDelW - 4, rc.bottom };
     std::wstring lbl = ActionLabel(act);
     DrawTextW(hdc, lbl.c_str(), -1, &tr,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
+    // [x] delete button — red, right-aligned inside the row
+    {
+        int bx = rc.right - kActionDelW;
+        int bw = kActionDelW - 2;
+        int bh = rc.bottom - rc.top - 4;
+        int by = rc.top + 2;
+        COLORREF xBg  = sel ? RGB(180, 50, 50) : RGB(140, 40, 40);
+        COLORREF xBrd = sel ? RGB(220, 80, 80) : RGB(180, 60, 60);
+        HBRUSH xBr = CreateSolidBrush(xBg);
+        HPEN   xPn = CreatePen(PS_SOLID, 1, xBrd);
+        HGDIOBJ ob2 = SelectObject(hdc, xBr);
+        HGDIOBJ op2 = SelectObject(hdc, xPn);
+        RoundRect(hdc, bx, by, bx + bw, by + bh, 3, 3);
+        SelectObject(hdc, ob2); SelectObject(hdc, op2);
+        DeleteObject(xBr); DeleteObject(xPn);
+        HFONT smF  = GetSmall(dis->hwndItem);
+        HFONT oldF2 = (HFONT)SelectObject(hdc, smF);
+        SetTextColor(hdc, RGB(255, 200, 200));
+        SetBkMode(hdc, TRANSPARENT);
+        RECT xr{ bx, by, bx + bw, by + bh };
+        DrawTextW(hdc, L"x", -1, &xr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(hdc, oldF2);
+    }
+
     SelectObject(hdc, oldF);
+
+    // Drag & drop indicator — blue line above drop target
+    if (g_actionDrag && g_actionDragHover == idx) {
+        HPEN hp = CreatePen(PS_SOLID, 2, RGB(80, 160, 255));
+        HGDIOBJ op2 = SelectObject(hdc, hp);
+        MoveToEx(hdc, rc.left + 4, rc.top + 1, nullptr);
+        LineTo(hdc, rc.right - 4, rc.top + 1);
+        SelectObject(hdc, op2); DeleteObject(hp);
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -777,6 +858,31 @@ static void PaintPage(HWND hWnd, HDC hdc)
         if (CardRect(hWnd, g_hChkEnabled, g_hDelayValue, Sc(hWnd, 10), Sc(hWnd, 8), card)) {
             FillRoundRect(hdc, card, Sc(hWnd, 7), Pal::CardBg, Pal::CardBorder);
             DrawCardLabel(hdc, hWnd, card, L"OPTIONS");
+
+        // Field labels inside OPTIONS (drawn here instead of STATIC controls)
+        {
+            HFONT oldF = (HFONT)SelectObject(hdc, GetSmall(hWnd));
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, UiTheme::Color_TextMuted());
+
+            // "Run N times (0=inf):"
+            if (g_hEditRepeatCount && IsWindow(g_hEditRepeatCount)) {
+                RECT er{}; GetWindowRect(g_hEditRepeatCount, &er);
+                MapWindowPoints(nullptr, hWnd, (LPPOINT)&er, 2);
+                RECT lr{ card.left + Sc(hWnd, 10), er.top, er.left - Sc(hWnd, 6), er.bottom };
+                DrawTextW(hdc, L"Run N times (0=inf):", -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+
+            // "Repeat delay:"
+            if (g_hEditDelay && IsWindow(g_hEditDelay)) {
+                RECT ed{}; GetWindowRect(g_hEditDelay, &ed);
+                MapWindowPoints(nullptr, hWnd, (LPPOINT)&ed, 2);
+                RECT lr{ card.left + Sc(hWnd, 10), ed.top, ed.left - Sc(hWnd, 6), ed.bottom };
+                DrawTextW(hdc, L"Repeat delay:", -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+
+            SelectObject(hdc, oldF);
+        }
         }
     }
 
@@ -789,7 +895,18 @@ static void PaintPage(HWND hWnd, HDC hdc)
         }
     }
 
-    // ── "Type / Value" label section actions ─────────────────────
+    // ── "Type" label (drawn here instead of STATIC) ────────────────
+    if (g_hActionTypeCB && IsWindow(g_hActionTypeCB)) {
+        RECT r{}; GetWindowRect(g_hActionTypeCB, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
+        HFONT oldF = (HFONT)SelectObject(hdc, GetSmall(hWnd));
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, UiTheme::Color_TextMuted());
+        RECT lr{ r.left - Sc(hWnd, 48), r.top, r.left - Sc(hWnd, 6), r.bottom };
+        DrawTextW(hdc, L"Type:", -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(hdc, oldF);
+    }
+
+// ── "Type / Value" label section actions ─────────────────────
     if (g_hActionKeyEdt && IsWindow(g_hActionKeyEdt)) {
         RECT r{}; GetWindowRect(g_hActionKeyEdt, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
         HFONT oldF = (HFONT)SelectObject(hdc, GetSmall(hWnd));
@@ -831,7 +948,11 @@ static void UpdateControlsEnabled()
     auto En = [&](HWND h) { if (h && IsWindow(h)) EnableWindow(h, has); };
     En(g_hEditName);    En(g_hLblTrigger);
     En(g_hBtnCapture);  En(g_hChkEnabled); En(g_hChkRepeat);
+    if (g_hChkCancelRel)    EnableWindow(g_hChkCancelRel,    has);
+    if (g_hEditRepeatCount) EnableWindow(g_hEditRepeatCount, has);
     En(g_hEditDelay);   En(g_hDelaySlider); En(g_hDelayValue);
+    if (g_hChkCancelRel)    EnableWindow(g_hChkCancelRel,    has);
+    if (g_hEditRepeatCount) EnableWindow(g_hEditRepeatCount, has);
     En(g_hActionList);  En(g_hActionTypeCB); En(g_hActionKeyEdt);
     En(g_hBtnAdd);      En(g_hBtnAddDelay);  En(g_hBtnDelAct);
     En(g_hBtnUp);       En(g_hBtnDown);      En(g_hBtnSave);
@@ -852,6 +973,8 @@ static void LoadComboToUI()
     CHK_SET(g_hChkRepeat, c->repeatWhileHeld);
     CHK_SET(g_hChkEnabled, c->enabled);
     SetDelayUi((int)c->repeatDelayMs);
+    if (g_hChkCancelRel)    CHK_SET(g_hChkCancelRel, c->cancelOnRelease);
+    if (g_hEditRepeatCount) SetWindowTextInt(g_hEditRepeatCount, (int)c->repeatCount);
     RefreshTriggerLabel();
     RefreshActionList();
     UpdateControlsEnabled();
@@ -942,6 +1065,11 @@ namespace FreeComboUI
             c->name = buf; c->repeatWhileHeld = CHK_GET(g_hChkRepeat);
             c->enabled = CHK_GET(g_hChkEnabled);
             c->repeatDelayMs = (uint32_t)ClampDelay(GetWindowTextInt(g_hEditDelay));
+            if (g_hChkCancelRel)    c->cancelOnRelease = CHK_GET(g_hChkCancelRel);
+            if (g_hEditRepeatCount) {
+                int rc = GetWindowTextInt(g_hEditRepeatCount);
+                c->repeatCount = (rc >= 0 && rc <= 9999) ? (uint32_t)rc : 0;
+            }
             if (c->enabled) DisableOtherCombosWithSameTrigger(g_selectedId);
             SetDelayUi((int)c->repeatDelayMs); RefreshComboList(); PersistToDisk();
             break;
@@ -966,6 +1094,7 @@ namespace FreeComboUI
                 SetWindowTextW(g_hActionKeyEdt, L"Click a mouse button...");
                 // Disable the Add button during capture to avoid accidental adds
                 EnableWindow(g_hBtnAdd, FALSE);
+                g_captureGraceUntil = GetTickCount() + 250; // 250ms grace — ignore the activating click
                 SetTimer(g_hPage, ID_TIMER_MOUSE_CAPTURE, 16, nullptr); // poll at ~60fps
             }
             break;
@@ -1055,6 +1184,21 @@ namespace FreeComboUI
             RefreshActionList(); LB_SETCUR(g_hActionList, sel + 1);
             PersistToDisk(); break;
         }
+
+        case ID_CHK_CANCEL_RELEASE:
+            if (g_selectedId >= 0 && notif == BN_CLICKED)
+                if (FreeCombo* c = FreeComboSystem::GetCombo(g_selectedId)) {
+                    c->cancelOnRelease = CHK_GET(g_hChkCancelRel); PersistToDisk();
+                }
+            break;
+        case ID_EDIT_REPEAT_COUNT:
+            if (g_selectedId >= 0 && notif == EN_KILLFOCUS)
+                if (FreeCombo* c = FreeComboSystem::GetCombo(g_selectedId)) {
+                    int rc = GetWindowTextInt(g_hEditRepeatCount);
+                    c->repeatCount = (rc >= 0 && rc <= 9999) ? (uint32_t)rc : 0;
+                    PersistToDisk();
+                }
+            break;
         } // switch
     }
 
@@ -1111,7 +1255,11 @@ namespace FreeComboUI
         g_hComboList = CreateWindowExW(0, L"LISTBOX", L"",
             WS_CHILD | WS_VISIBLE | LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | WS_VSCROLL,
             lx, ly, lw, listH, g_hPage, (HMENU)ID_COMBO_LIST, hInst, nullptr);
-        SendMessageW(g_hComboList, LB_SETITEMHEIGHT, 0, 28);
+        SendMessageW(g_hComboList, LB_SETITEMHEIGHT, 0, 42);  // taller for trigger preview
+        // Subclass pour intercepter WM_LBUTTONDOWN (drag & drop)
+        g_hPageForSubclass = g_hPage;
+        g_origComboListProc = (WNDPROC)SetWindowLongPtrW(g_hComboList, GWLP_WNDPROC,
+            (LONG_PTR)ComboListSubclassProc);
 
         int btnY = ly + listH + 6;
         int bw2 = (lw - 6) / 2;
@@ -1147,33 +1295,46 @@ namespace FreeComboUI
         // ─ Options card ─
         ry += 18;
 
+        // ── OPTIONS — 4 lignes bien séparées (28px chacune) ──────────────
+        // Ligne 1 : [Combo enabled]        [Repeat while held]
         g_hChkEnabled = CreateWindowExW(0, L"BUTTON", L"Combo enabled",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
             rx, ry, 148, 20, g_hPage, (HMENU)ID_CHK_ENABLED, hInst, nullptr);
         CHK_SET(g_hChkEnabled, true);
-
         g_hChkRepeat = CreateWindowExW(0, L"BUTTON", L"Repeat while held",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
             rx + 156, ry, 196, 20, g_hPage, (HMENU)ID_CHK_REPEAT, hInst, nullptr);
-        ry += 26;
+        ry += 28;
 
-        // Delay row: static label | edit | slider | value
-        HWND lblDel = CreateWindowExW(0, L"STATIC", L"Repeat delay:",
-            WS_CHILD | WS_VISIBLE, rx, ry + 3, 142, 18, g_hPage, nullptr, hInst, nullptr);
-        (void)lblDel;
-        g_hEditDelay = CreateWindowExW(0, L"EDIT", L"400", WS_CHILD | WS_VISIBLE | ES_NUMBER,
-            rx + 146, ry, 52, rowH, g_hPage, (HMENU)ID_EDIT_DELAY, hInst, nullptr);
-        ry += rowH + 4;
+        // Ligne 2 : [Run N times (0=inf): label] [edit 44px]   [Cancel on release]
+        {
+            // (Label drawn in WM_PAINT) Run N times (0=inf):
+            g_hEditRepeatCount = CreateWindowExW(0, L"EDIT", L"0",
+                WS_CHILD | WS_VISIBLE | ES_NUMBER | WS_TABSTOP,
+                rx + 156, ry, 44, rowH, g_hPage, (HMENU)ID_EDIT_REPEAT_COUNT, hInst, nullptr);
+            g_hChkCancelRel = CreateWindowExW(0, L"BUTTON", L"Cancel on release",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                rx + 210, ry, 180, 20, g_hPage, (HMENU)ID_CHK_CANCEL_RELEASE, hInst, nullptr);
+        }
+        ry += 28;
 
+        // Ligne 3 : [Repeat delay: label] [edit 52px ms]
+        {
+            // (Label drawn in WM_PAINT) Repeat delay:
+g_hEditDelay = CreateWindowExW(0, L"EDIT", L"400", WS_CHILD | WS_VISIBLE | ES_NUMBER,
+                rx + 146, ry, 52, rowH, g_hPage, (HMENU)ID_EDIT_DELAY, hInst, nullptr);
+        }
+        ry += 28;
+
+        // Ligne 4 : [slider] [400 ms label]
         g_hDelaySlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
             WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS,
             rx, ry, rw - 62, 22, g_hPage, (HMENU)ID_SLIDER_DELAY, hInst, nullptr);
         SendMessageW(g_hDelaySlider, TBM_SETRANGE, FALSE, MAKELONG(10, 2000));
         SendMessageW(g_hDelaySlider, TBM_SETPAGESIZE, 0, 50);
-
         g_hDelayValue = CreateWindowExW(0, L"STATIC", L"400 ms", WS_CHILD | WS_VISIBLE | SS_RIGHT,
             rx + rw - 58, ry, 58, 22, g_hPage, (HMENU)ID_LBL_DELAY_VALUE, hInst, nullptr);
-        ry += 26 + 12;
+        ry += 30 + 12;
 
         // ─ Actions card ─
         ry += 18;
@@ -1182,13 +1343,13 @@ namespace FreeComboUI
             WS_CHILD | WS_VISIBLE | LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | WS_VSCROLL,
             rx, ry, rw, 100, g_hPage, (HMENU)ID_ACTION_LIST, hInst, nullptr);
         SendMessageW(g_hActionList, LB_SETITEMHEIGHT, 0, 24);
+        // Subclass pour intercepter WM_LBUTTONDOWN (drag & drop + clic [x])
+        g_origActionListProc = (WNDPROC)SetWindowLongPtrW(g_hActionList, GWLP_WNDPROC,
+            (LONG_PTR)ActionListSubclassProc);
         ry += 106;
 
-        // Action type
-        HWND lblType = CreateWindowExW(0, L"STATIC", L"Type:", WS_CHILD | WS_VISIBLE,
-            rx, ry + 3, 44, 18, g_hPage, nullptr, hInst, nullptr);
-        (void)lblType;
-        g_hActionTypeCB = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+        // Action type (label drawn in WM_PAINT)
+g_hActionTypeCB = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
             rx + 48, ry, rw - 48, 300, g_hPage, (HMENU)ID_ACTION_TYPE_CB, hInst, nullptr);
         // Items added AFTER ApplyFontChildren below — WM_SETFONT on combobox clears items on some Win32 builds
         ry += rowH + 4;
@@ -1236,6 +1397,8 @@ namespace FreeComboUI
         ApplyTheme(g_hBtnCapture); ApplyTheme(g_hActionList); ApplyTheme(g_hActionTypeCB);
         ApplyTheme(g_hActionKeyEdt); ApplyTheme(g_hBtnCaptureMouse);
         ApplyTheme(g_hChkRepeat); ApplyTheme(g_hChkEnabled);
+        if (g_hChkCancelRel)    ApplyTheme(g_hChkCancelRel);
+        if (g_hEditRepeatCount) ApplyTheme(g_hEditRepeatCount);
         ApplyTheme(g_hEditDelay); ApplyTheme(g_hDelaySlider); ApplyTheme(g_hDelayValue);
 
         ApplyFontChildren(g_hPage);
@@ -1405,6 +1568,8 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             bool isMouseClick = (ti == 4); // index 4 = Mouse click (0=Press,1=Release,2=Tap,3=Text,4=Mouse,5=Wait)
             if (g_hBtnCaptureMouse) {
                 ShowWindow(g_hBtnCaptureMouse, isMouseClick ? SW_SHOW : SW_HIDE);
+                // Enable/disable to match the new type — without this the button stays greyed
+                if (isMouseClick) EnableWindow(g_hBtnCaptureMouse, TRUE);
                 // Force repaint of the value row area so the button appears immediately
                 InvalidateRect(g_hPage, nullptr, FALSE);
                 if (isMouseClick) UpdateWindow(g_hBtnCaptureMouse);
@@ -1419,7 +1584,11 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             }
             // Clear the value field hint when switching types
             if (g_hActionKeyEdt) {
-                if (isMouseClick)   SetWindowTextW(g_hActionKeyEdt, L"left");
+                if (isMouseClick) {
+                    SetWindowTextW(g_hActionKeyEdt, L"left");
+                    // Reset grace so any ongoing capture doesn't catch the combobox click
+                    g_captureGraceUntil = GetTickCount() + 300;
+                }
                 else if (ti == 5)   SetWindowTextW(g_hActionKeyEdt, L"100");   // Wait ms
                 else if (ti == 3)   SetWindowTextW(g_hActionKeyEdt, L"");      // Type text
                 else                SetWindowTextW(g_hActionKeyEdt, L"P");     // Key
@@ -1446,25 +1615,32 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
     case WM_TIMER:
         if (wParam == FreeComboUI::ID_TIMER_CAPTURE) { FreeComboUI::OnTimer(); return 0; }
         if (wParam == FreeComboUI::ID_TIMER_MOUSE_CAPTURE) {
-            // Poll all 5 mouse buttons — first one detected wins
             struct { int vk; int btn; const wchar_t* name; } btns[] = {
                 { VK_LBUTTON,  0, L"left"        },
                 { VK_RBUTTON,  1, L"right"       },
                 { VK_MBUTTON,  2, L"middle"      },
-                { VK_XBUTTON1, 3, L"X1 (thumb)"  },
-                { VK_XBUTTON2, 4, L"X2 (thumb2)" },
+                { VK_XBUTTON2, 3, L"X1 (thumb)"  }, // XBUTTON2 = upper thumb = X1 in our visual
+                { VK_XBUTTON1, 4, L"X2 (thumb2)" }, // XBUTTON1 = lower thumb = X2 in our visual
             };
+
+            // Phase 1: grace period — extend as long as any button is still held.
+            // This handles both the combobox selection click and the capture button click.
+            if (GetTickCount() < g_captureGraceUntil) {
+                bool anyHeld = false;
+                for (auto& b : btns) if (GetAsyncKeyState(b.vk) & 0x8000) { anyHeld = true; break; }
+                if (anyHeld) g_captureGraceUntil = GetTickCount() + 100; // keep extending while held
+                return 0;
+            }
+
+            // Phase 2: all buttons released — detect first press
             for (auto& b : btns) {
                 if (GetAsyncKeyState(b.vk) & 0x8000) {
                     KillTimer(hWnd, FreeComboUI::ID_TIMER_MOUSE_CAPTURE);
                     g_capturingMouseAction = false;
-                    // Fill the value field with the button name
                     SetWindowTextW(g_hActionKeyEdt, b.name);
-                    // Restore button states
                     SetWindowTextW(g_hBtnCaptureMouse, L"\U0001F5B1");
                     EnableWindow(g_hBtnCaptureMouse, TRUE);
                     EnableWindow(g_hBtnAdd, TRUE);
-                    // Small visual feedback: flash the edit field selection
                     SetFocus(g_hActionKeyEdt);
                     SendMessageW(g_hActionKeyEdt, EM_SETSEL, 0, -1);
                     break;
@@ -1532,12 +1708,20 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         if (g_hChkEnabled)   SetWindowPos(g_hChkEnabled, nullptr, rx, ry, Sc(hWnd, 148), Sc(hWnd, 20), SWP_NOZORDER);
         if (g_hChkRepeat)    SetWindowPos(g_hChkRepeat, nullptr, rx + Sc(hWnd, 156), ry, Sc(hWnd, 196), Sc(hWnd, 20), SWP_NOZORDER);
         ry += Sc(hWnd, 26);
+
+        // Run N times + Cancel on release (FIX: was not positioned, could end up behind other controls)
+        if (g_hEditRepeatCount) SetWindowPos(g_hEditRepeatCount, nullptr, rx + Sc(hWnd, 156), ry, Sc(hWnd, 44), rowH, SWP_NOZORDER);
+        if (g_hChkCancelRel)    SetWindowPos(g_hChkCancelRel,    nullptr, rx + Sc(hWnd, 210), ry, Sc(hWnd, 180), Sc(hWnd, 20), SWP_NOZORDER);
+        ry += rowH + Sc(hWnd, 4);
+
+        // Repeat delay edit
         if (g_hEditDelay)    SetWindowPos(g_hEditDelay, nullptr, rx + Sc(hWnd, 146), ry, Sc(hWnd, 52), rowH, SWP_NOZORDER);
         ry += rowH + Sc(hWnd, 4);
+
+        // Delay slider + value label
         if (g_hDelaySlider)  SetWindowPos(g_hDelaySlider, nullptr, rx, ry, rw - Sc(hWnd, 62), Sc(hWnd, 22), SWP_NOZORDER);
         if (g_hDelayValue)   SetWindowPos(g_hDelayValue, nullptr, rx + rw - Sc(hWnd, 58), ry, Sc(hWnd, 58), Sc(hWnd, 22), SWP_NOZORDER);
         ry += Sc(hWnd, 26) + Sc(hWnd, 12);
-
         // Card Actions
         ry += Sc(hWnd, 18);
         if (g_hActionList)   SetWindowPos(g_hActionList, nullptr, rx, ry, rw, Sc(hWnd, 100), SWP_NOZORDER);
@@ -1595,7 +1779,6 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             RECT thumb = FC_GetScrollThumb(hWnd);
             RECT track = FC_GetScrollTrack(hWnd);
             if (PtInRect(&thumb, pt)) {
-                // Start drag
                 g_scrollDrag = true;
                 g_scrollDragStartY = pt.y;
                 g_scrollDragStartScrollY = g_scrollY;
@@ -1606,7 +1789,6 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 return 0;
             }
             else if (PtInRect(&track, pt)) {
-                // Page up/down on track click
                 RECT clientRc{}; GetClientRect(hWnd, &clientRc);
                 int pageH = clientRc.bottom - clientRc.top;
                 if (pt.y < thumb.top)
@@ -1619,9 +1801,11 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         break;
     }
 
+
+
     case WM_MOUSEMOVE: {
+        POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
         if (g_scrollDrag) {
-            POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
             RECT track = FC_GetScrollTrack(hWnd);
             int trackH = std::max(1, (int)(track.bottom - track.top));
             int maxScroll = std::max(1, g_scrollDragMax);
@@ -1631,6 +1815,36 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             double t = (double)dy / (double)travel;
             int target = g_scrollDragStartScrollY + (int)(t * maxScroll);
             FC_SetScrollY(hWnd, target);
+            return 0;
+        }
+        if (g_actionDrag && g_hActionList) {
+            POINT lpt = pt;
+            MapWindowPoints(hWnd, g_hActionList, &lpt, 1);
+            int itemH = (int)SendMessageW(g_hActionList, LB_GETITEMHEIGHT, 0, 0);
+            if (itemH <= 0) itemH = 24;
+            int idx2 = (int)SendMessageW(g_hActionList, LB_GETTOPINDEX, 0, 0) + lpt.y / itemH;
+            int cnt2 = (int)SendMessageW(g_hActionList, LB_GETCOUNT, 0, 0);
+            idx2 = std::max(0, std::min(idx2, cnt2 - 1));
+            if (idx2 != g_actionDragHover) {
+                g_actionDragHover = idx2;
+                InvalidateRect(g_hActionList, nullptr, FALSE);
+            }
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return 0;
+        }
+        if (g_comboDrag && g_hComboList) {
+            POINT lpt = pt;
+            MapWindowPoints(hWnd, g_hComboList, &lpt, 1);
+            int itemH = (int)SendMessageW(g_hComboList, LB_GETITEMHEIGHT, 0, 0);
+            if (itemH <= 0) itemH = 28;
+            int idx2 = (int)SendMessageW(g_hComboList, LB_GETTOPINDEX, 0, 0) + lpt.y / itemH;
+            int cnt2 = (int)SendMessageW(g_hComboList, LB_GETCOUNT, 0, 0);
+            idx2 = std::max(0, std::min(idx2, cnt2 - 1));
+            if (idx2 != g_comboDragHover) {
+                g_comboDragHover = idx2;
+                InvalidateRect(g_hComboList, nullptr, FALSE);
+            }
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
             return 0;
         }
         break;
@@ -1643,6 +1857,56 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             InvalidateRect(hWnd, nullptr, FALSE);
             return 0;
         }
+        if (g_actionDrag) {
+            int src = g_actionDragSrcIdx;
+            int dst = g_actionDragHover;
+            g_actionDrag = false;
+            g_actionDragSrcIdx = -1;
+            g_actionDragHover  = -1;
+            ReleaseCapture();
+            if (src >= 0 && dst >= 0 && src != dst && g_selectedId >= 0) {
+                // Move action from src to dst by successive swaps
+                FreeCombo* c = FreeComboSystem::GetCombo(g_selectedId);
+                if (c && src < (int)c->actions.size() && dst < (int)c->actions.size()) {
+                    int step = (src < dst) ? 1 : -1;
+                    for (int i = src; i != dst; i += step) {
+                        if (step > 0) FreeComboSystem::MoveActionDown(g_selectedId, i);
+                        else          FreeComboSystem::MoveActionUp(g_selectedId, i);
+                    }
+                    RefreshActionList();
+                    LB_SETCUR(g_hActionList, dst);
+                    PersistToDisk();
+                }
+            }
+            InvalidateRect(g_hActionList, nullptr, FALSE);
+            return 0;
+        }
+        if (g_comboDrag) {
+            int src = g_comboDragSrcIdx;
+            int dst = g_comboDragHover;
+            g_comboDrag = false;
+            g_comboDragSrcIdx = -1;
+            g_comboDragHover  = -1;
+            ReleaseCapture();
+            if (src >= 0 && dst >= 0 && src != dst
+                && src < (int)g_comboIds.size() && dst < (int)g_comboIds.size()) {
+                // Swap IDs in g_comboIds then persist via SaveToFile
+                // We move src toward dst step by step (reflects visual order)
+                int step = (src < dst) ? 1 : -1;
+                for (int i = src; i != dst; i += step) {
+                    int idA = g_comboIds[(size_t)i];
+                    int idB = g_comboIds[(size_t)(i + step)];
+                    FreeComboSystem::SwapCombos(idA, idB);
+                    std::swap(g_comboIds[(size_t)i], g_comboIds[(size_t)(i + step)]);
+                }
+                int selId = g_comboIds[(size_t)dst];
+                FreeComboUI::RefreshComboList();
+                FreeComboUI::SelectCombo(selId);
+                PersistToDisk();
+            }
+            InvalidateRect(g_hComboList, nullptr, FALSE);
+            return 0;
+        }
         break;
     }
 
@@ -1651,10 +1915,26 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             g_scrollDrag = false;
             InvalidateRect(hWnd, nullptr, FALSE);
         }
+        if (g_actionDrag) {
+            g_actionDrag = false; g_actionDragSrcIdx = -1; g_actionDragHover = -1;
+            InvalidateRect(g_hActionList, nullptr, FALSE);
+        }
+        if (g_comboDrag) {
+            g_comboDrag = false; g_comboDragSrcIdx = -1; g_comboDragHover = -1;
+            InvalidateRect(g_hComboList, nullptr, FALSE);
+        }
         return 0;
     }
 
     case WM_SETCURSOR: {
+        if (g_actionDrag || g_comboDrag) {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
+        }
+        if ((HWND)wParam == g_hActionList || (HWND)wParam == g_hComboList) {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
+        }
         if ((HWND)wParam == hWnd && FC_GetMaxScroll(hWnd) > 0) {
             POINT pt{};
             GetCursorPos(&pt); ScreenToClient(hWnd, &pt);
@@ -1670,4 +1950,93 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
     } // switch
     return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Subclass proc — Action list  (drag & drop + clic [x])
+// ════════════════════════════════════════════════════════════════════
+static LRESULT CALLBACK ActionListSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_LBUTTONDOWN) {
+        POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        int itemH = (int)SendMessageW(hWnd, LB_GETITEMHEIGHT, 0, 0);
+        if (itemH <= 0) itemH = 24;
+        int top = (int)SendMessageW(hWnd, LB_GETTOPINDEX, 0, 0);
+        int idx = top + pt.y / itemH;
+        int cnt = (int)SendMessageW(hWnd, LB_GETCOUNT, 0, 0);
+        if (idx >= 0 && idx < cnt && g_selectedId >= 0) {
+            RECT itemRc{}; SendMessageW(hWnd, LB_GETITEMRECT, idx, (LPARAM)&itemRc);
+            if (pt.x >= itemRc.right - kActionDelW) {
+                FreeComboSystem::RemoveAction(g_selectedId, idx);
+                RefreshActionList(); PersistToDisk();
+                return 0;
+            }
+            g_actionDrag       = true;
+            g_actionDragSrcIdx = idx;
+            g_actionDragHover  = idx;
+            // Sélection visuelle via la listbox, puis on reprend la capture
+            CallWindowProcW(g_origActionListProc, hWnd, msg, wParam, lParam);
+            SetCapture(g_hPageForSubclass);
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return 0;
+        }
+    }
+    if (msg == WM_MOUSEMOVE && g_actionDrag) {
+        POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        ClientToScreen(hWnd, &pt);
+        ScreenToClient(g_hPageForSubclass, &pt);
+        SendMessageW(g_hPageForSubclass, WM_MOUSEMOVE, wParam, MAKELPARAM((short)pt.x, (short)pt.y));
+        return 0;
+    }
+    if (msg == WM_LBUTTONUP && g_actionDrag) {
+        POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        ClientToScreen(hWnd, &pt);
+        ScreenToClient(g_hPageForSubclass, &pt);
+        SendMessageW(g_hPageForSubclass, WM_LBUTTONUP, wParam, MAKELPARAM((short)pt.x, (short)pt.y));
+        return 0;
+    }
+    return CallWindowProcW(g_origActionListProc, hWnd, msg, wParam, lParam);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Subclass proc — Combo list  (drag & drop)
+// ════════════════════════════════════════════════════════════════════
+static LRESULT CALLBACK ComboListSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_LBUTTONDOWN) {
+        POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        int itemH = (int)SendMessageW(hWnd, LB_GETITEMHEIGHT, 0, 0);
+        if (itemH <= 0) itemH = 42;
+        int top = (int)SendMessageW(hWnd, LB_GETTOPINDEX, 0, 0);
+        int idx = top + pt.y / itemH;
+        int cnt = (int)SendMessageW(hWnd, LB_GETCOUNT, 0, 0);
+        if (idx >= 0 && idx < cnt) {
+            // Sélectionner l'item explicitement AVANT de capturer la souris
+            SendMessageW(hWnd, LB_SETCURSEL, (WPARAM)idx, 0);
+            // Notifier le parent (LBN_SELCHANGE) pour que LoadComboToUI() se déclenche
+            SendMessageW(GetParent(hWnd), WM_COMMAND,
+                MAKEWPARAM(GetDlgCtrlID(hWnd), LBN_SELCHANGE), (LPARAM)hWnd);
+            g_comboDrag       = true;
+            g_comboDragSrcIdx = idx;
+            g_comboDragHover  = idx;
+            SetCapture(g_hPageForSubclass);
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return 0;
+        }
+    }
+    if (msg == WM_MOUSEMOVE && g_comboDrag) {
+        POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        ClientToScreen(hWnd, &pt);
+        ScreenToClient(g_hPageForSubclass, &pt);
+        SendMessageW(g_hPageForSubclass, WM_MOUSEMOVE, wParam, MAKELPARAM((short)pt.x, (short)pt.y));
+        return 0;
+    }
+    if (msg == WM_LBUTTONUP && g_comboDrag) {
+        POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        ClientToScreen(hWnd, &pt);
+        ScreenToClient(g_hPageForSubclass, &pt);
+        SendMessageW(g_hPageForSubclass, WM_LBUTTONUP, wParam, MAKELPARAM((short)pt.x, (short)pt.y));
+        return 0;
+    }
+    return CallWindowProcW(g_origComboListProc, hWnd, msg, wParam, lParam);
 }

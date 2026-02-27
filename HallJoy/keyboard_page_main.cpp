@@ -36,6 +36,7 @@
 #include "settings.h"
 #include "key_settings.h" // NEW
 #include "free_combo_ui.h"
+#include "free_combo_system.h" // FreeComboSystem::GetInjectedMouseState
 
 #pragma comment(lib, "Comctl32.lib")
 
@@ -56,12 +57,24 @@ struct KeyboardViewMetrics
     int scaledH = 0;
 };
 
-// ══════════════════════════════════════════════════════════════════════
-// MOUSE VIEW — floating silhouette, top-right, no card/border/label
-// Mirrors the keyboard visual style: floats directly on the background.
-// ══════════════════════════════════════════════════════════════════════
 static RECT g_mouseViewRect{};
 static int KeyboardBottomPx(HWND hWnd); // forward declaration
+
+// Previous mouse button state — only invalidate when something changes
+static BYTE g_mouseStatePrev = 0xFF; // force first paint
+
+static BYTE MouseCurrentState()
+{
+    BYTE s = 0;
+    if (GetAsyncKeyState(VK_LBUTTON)  & 0x8000) s |= (1 << 0);
+    if (GetAsyncKeyState(VK_RBUTTON)  & 0x8000) s |= (1 << 1);
+    if (GetAsyncKeyState(VK_MBUTTON)  & 0x8000) s |= (1 << 2);
+    if (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) s |= (1 << 3);
+    if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) s |= (1 << 4);
+    // OR with macro-injected state so simulated clicks light up the view
+    s |= FreeComboSystem::GetInjectedMouseState();
+    return s;
+}
 
 static void FillBezierShape(HDC hdc, const POINT* pts, int nPts, HBRUSH br, HPEN pn)
 {
@@ -80,161 +93,141 @@ static void DrawMouseView(HWND hWnd, HDC hdc)
     RECT wrc{};
     GetClientRect(hWnd, &wrc);
 
-    // ── Size: match keyboard height ───────────────────────────────
-    // Keyboard uses topPad=8 and fills ~availH. We mirror that height.
-    // Mouse card: same top as keyboard (topPad=8), height = keyboard height
     int topPad = S(hWnd, 8);
-    int kbH = KeyboardBottomPx(hWnd) - topPad;  // same height as keyboard
-    int mvH = kbH;
-    int mvW = (int)(mvH * 0.62f);  // mouse aspect ratio ~0.62
+    int kbH    = KeyboardBottomPx(hWnd) - topPad;
+    int mvH    = kbH;
+    int mvW    = (int)(mvH * 0.62f);
 
-    // Position: right edge, same Y as keyboard
     int cx = wrc.right - mvW / 2 - S(hWnd, 10);
     int cy = topPad + mvH / 2;
 
-    // Bounding rect for timer invalidation (no visible border)
-    g_mouseViewRect = { cx - mvW / 2 - S(hWnd,4), topPad,
-                        cx + mvW / 2 + S(hWnd,4), topPad + mvH };
+    g_mouseViewRect = { cx - mvW/2 - S(hWnd,4), topPad,
+                        cx + mvW/2 + S(hWnd,4), topPad + mvH };
 
-    // ── Live button states ────────────────────────────────────────
-    bool bL = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    bool bR = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-    bool bM = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
-    bool bX1 = (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) != 0;
-    bool bX2 = (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0;
+    BYTE ms = g_mouseStatePrev;
+    bool bL  = (ms & (1 << 0)) != 0;
+    bool bR  = (ms & (1 << 1)) != 0;
+    bool bM  = (ms & (1 << 2)) != 0;
+    bool bX1 = (ms & (1 << 3)) != 0;
+    bool bX2 = (ms & (1 << 4)) != 0;
 
-    // ── Colors ────────────────────────────────────────────────────
-    COLORREF cBody = RGB(38, 38, 50);
-    COLORREF cBrdB = RGB(65, 65, 82);
-    COLORREF cIdle = RGB(48, 48, 62);
-    COLORREF cBrdI = RGB(72, 72, 92);
+    COLORREF cBody  = RGB(38, 38, 50);
+    COLORREF cBrdB  = RGB(65, 65, 82);
+    COLORREF cIdle  = RGB(48, 48, 62);
+    COLORREF cBrdI  = RGB(72, 72, 92);
     COLORREF cPress = RGB(50, 140, 255);
-    COLORREF cBrdP = RGB(90, 175, 255);
+    COLORREF cBrdP  = RGB(90, 175, 255);
     COLORREF cWheel = RGB(28, 28, 40);
-    COLORREF cWBrd = RGB(60, 60, 80);
-    COLORREF cSep = RGB(55, 55, 72);
-    COLORREF cTxt = RGB(160, 160, 185);
-    COLORREF cTxtP = RGB(230, 240, 255);
+    COLORREF cWBrd  = RGB(60, 60, 80);
+    COLORREF cSep   = RGB(55, 55, 72);
+    COLORREF cTxt   = RGB(160, 160, 185);
+    COLORREF cTxtP  = RGB(230, 240, 255);
 
-    // Unit system: 100 units = half the height
     float unit = mvH * 0.5f / 100.0f;
     auto px = [&](float u) -> int { return (int)(cx + u * unit); };
     auto py = [&](float u) -> int { return (int)(cy + u * unit); };
 
-    // ── 1. Mouse body silhouette ──────────────────────────────────
-    // Teardrop: narrow at top, wide rounded base
+    // Body
     {
         POINT body[] = {
-            {px(0),   py(-98)},
-            {px(22),  py(-98)}, {px(46),  py(-75)}, {px(48),  py(-45)},
-            {px(50),  py(-10)}, {px(50),  py(30)}, {px(46),  py(65)},
-            {px(42),  py(90)}, {px(22),  py(98)}, {px(0),  py(98)},
-            {px(-22),  py(98)}, {px(-42),  py(90)}, {px(-46),  py(65)},
-            {px(-50),  py(30)}, {px(-50),  py(-10)}, {px(-48),  py(-45)},
-            {px(-46),  py(-75)}, {px(-22),  py(-98)}, {px(0),  py(-98)},
+            {px( 0),  py(-98)},
+            {px( 22), py(-98)}, {px( 46), py(-75)}, {px( 48), py(-45)},
+            {px( 50), py(-10)}, {px( 50), py( 30)}, {px( 46), py( 65)},
+            {px( 42), py( 90)}, {px( 22), py( 98)}, {px(  0), py( 98)},
+            {px(-22), py( 98)}, {px(-42), py( 90)}, {px(-46), py( 65)},
+            {px(-50), py( 30)}, {px(-50), py(-10)}, {px(-48), py(-45)},
+            {px(-46), py(-75)}, {px(-22), py(-98)}, {px(  0), py(-98)},
         };
         HBRUSH br = CreateSolidBrush(cBody);
         HPEN   pn = CreatePen(PS_SOLID, 1, cBrdB);
         FillBezierShape(hdc, body, ARRAYSIZE(body), br, pn);
         DeleteObject(br); DeleteObject(pn);
     }
-
-    // ── 2. Left button ────────────────────────────────────────────
+    // Left button
     {
         POINT lbtn[] = {
-            {px(0),  py(-97)},
+            {px( 0),  py(-97)},
             {px(-2),  py(-97)}, {px(-22), py(-87)}, {px(-40), py(-64)},
-            {px(-43), py(-48)}, {px(-43), py(-22)}, {px(-2), py(-22)},
-            {px(-1),  py(-22)}, {px(0), py(-22)}, {px(0), py(-97)},
+            {px(-43), py(-48)}, {px(-43), py(-22)}, {px( -2), py(-22)},
+            {px(-1),  py(-22)}, {px(  0), py(-22)}, {px(  0), py(-97)},
         };
         HBRUSH br = CreateSolidBrush(bL ? cPress : cIdle);
         HPEN   pn = CreatePen(PS_SOLID, 1, bL ? cBrdP : cBrdI);
         FillBezierShape(hdc, lbtn, ARRAYSIZE(lbtn), br, pn);
         DeleteObject(br); DeleteObject(pn);
     }
-
-    // ── 3. Right button ───────────────────────────────────────────
+    // Right button
     {
         POINT rbtn[] = {
-            {px(0),  py(-97)},
-            {px(2),  py(-97)}, {px(22), py(-87)}, {px(40), py(-64)},
-            {px(43), py(-48)}, {px(43), py(-22)}, {px(2), py(-22)},
-            {px(1),  py(-22)}, {px(0), py(-22)}, {px(0), py(-97)},
+            {px( 0),  py(-97)},
+            {px( 2),  py(-97)}, {px( 22), py(-87)}, {px( 40), py(-64)},
+            {px( 43), py(-48)}, {px( 43), py(-22)}, {px(  2), py(-22)},
+            {px( 1),  py(-22)}, {px(  0), py(-22)}, {px(  0), py(-97)},
         };
         HBRUSH br = CreateSolidBrush(bR ? cPress : cIdle);
         HPEN   pn = CreatePen(PS_SOLID, 1, bR ? cBrdP : cBrdI);
         FillBezierShape(hdc, rbtn, ARRAYSIZE(rbtn), br, pn);
         DeleteObject(br); DeleteObject(pn);
     }
-
-    // ── 4. Separator line between L and R buttons ─────────────────
+    // Separator
     {
         HPEN pn = CreatePen(PS_SOLID, 1, cSep);
         HGDIOBJ op = SelectObject(hdc, pn);
         MoveToEx(hdc, px(0), py(-97), nullptr);
-        LineTo(hdc, px(0), py(-22));
-        SelectObject(hdc, op);
-        DeleteObject(pn);
+        LineTo   (hdc, px(0), py(-22));
+        SelectObject(hdc, op); DeleteObject(pn);
     }
-
-    // ── 5. Scroll wheel ───────────────────────────────────────────
+    // Scroll wheel
     {
         int wx = px(0), wy = py(-57);
         int ww = S(hWnd, 9), wh = (int)(mvH * 0.22f);
-        RECT wr{ wx - ww / 2, wy - wh / 2, wx + ww / 2, wy + wh / 2 };
+        RECT wr{ wx-ww/2, wy-wh/2, wx+ww/2, wy+wh/2 };
         HBRUSH br = CreateSolidBrush(bM ? cPress : cWheel);
         HPEN   pn = CreatePen(PS_SOLID, 1, bM ? cBrdP : cWBrd);
         HGDIOBJ ob = SelectObject(hdc, br);
         HGDIOBJ op = SelectObject(hdc, pn);
-        RoundRect(hdc, wr.left, wr.top, wr.right, wr.bottom, S(hWnd, 4), S(hWnd, 4));
+        RoundRect(hdc, wr.left, wr.top, wr.right, wr.bottom, S(hWnd,4), S(hWnd,4));
         SelectObject(hdc, ob); SelectObject(hdc, op);
         DeleteObject(br); DeleteObject(pn);
     }
-
-    // ── 6. Side buttons X1 (upper) / X2 (lower) on LEFT flank ────
-    // X1 = thumb button near top, X2 = thumb button lower
-    // Positioned on the left side of the body
+    // Side buttons X1 / X2
     auto DrawSideBtn = [&](float topU, float btmU, bool pressed, const wchar_t* lbl)
-        {
-            int bx1 = px(-52), bx2 = px(-36);
-            int by1 = py(topU), by2 = py(btmU);
-            HBRUSH br = CreateSolidBrush(pressed ? cPress : cIdle);
-            HPEN   pn = CreatePen(PS_SOLID, 1, pressed ? cBrdP : cBrdI);
-            HGDIOBJ ob = SelectObject(hdc, br);
-            HGDIOBJ op = SelectObject(hdc, pn);
-            RoundRect(hdc, bx1, by1, bx2, by2, S(hWnd, 3), S(hWnd, 3));
-            SelectObject(hdc, ob); SelectObject(hdc, op);
-            DeleteObject(br); DeleteObject(pn);
-            HFONT hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-            HFONT oldF = (HFONT)SelectObject(hdc, hf);
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, pressed ? cTxtP : cTxt);
-            RECT r{ bx1, by1, bx2, by2 };
-            DrawTextW(hdc, lbl, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            SelectObject(hdc, oldF);
-        };
-
-    // X1 upper, X2 lower — bX2/bX1 swapped to match physical button mapping
+    {
+        int bx1 = px(-52), bx2 = px(-36);
+        int by1 = py(topU), by2 = py(btmU);
+        HBRUSH br = CreateSolidBrush(pressed ? cPress : cIdle);
+        HPEN   pn = CreatePen(PS_SOLID, 1, pressed ? cBrdP : cBrdI);
+        HGDIOBJ ob = SelectObject(hdc, br);
+        HGDIOBJ op = SelectObject(hdc, pn);
+        RoundRect(hdc, bx1, by1, bx2, by2, S(hWnd,3), S(hWnd,3));
+        SelectObject(hdc, ob); SelectObject(hdc, op);
+        DeleteObject(br); DeleteObject(pn);
+        HFONT hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HFONT oldF = (HFONT)SelectObject(hdc, hf);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, pressed ? cTxtP : cTxt);
+        RECT r{bx1, by1, bx2, by2};
+        DrawTextW(hdc, lbl, -1, &r, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+        SelectObject(hdc, oldF);
+    };
     DrawSideBtn(-15, 12, bX2, L"X1");
-    DrawSideBtn(16, 43, bX1, L"X2");
+    DrawSideBtn( 16, 43, bX1, L"X2");
 
-    // ── 7. Button labels L / R ────────────────────────────────────
+    // Labels L / R
     HFONT hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     auto DrawLabel = [&](float ux, float uy, bool pressed, const wchar_t* lbl)
-        {
-            RECT r{ px((int)ux) - S(hWnd,12), py((int)uy) - S(hWnd,7),
-                    px((int)ux) + S(hWnd,12), py((int)uy) + S(hWnd,7) };
-            HFONT oldF = (HFONT)SelectObject(hdc, hf);
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, pressed ? cTxtP : cTxt);
-            DrawTextW(hdc, lbl, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            SelectObject(hdc, oldF);
-        };
-
+    {
+        RECT r{ px((int)ux)-S(hWnd,12), py((int)uy)-S(hWnd,7),
+                px((int)ux)+S(hWnd,12), py((int)uy)+S(hWnd,7) };
+        HFONT oldF = (HFONT)SelectObject(hdc, hf);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, pressed ? cTxtP : cTxt);
+        DrawTextW(hdc, lbl, -1, &r, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+        SelectObject(hdc, oldF);
+    };
     DrawLabel(-22, -65, bL, L"L");
-    DrawLabel(22, -65, bR, L"R");
+    DrawLabel( 22, -65, bR, L"R");
 }
-
 
 static void ComputeKeyboardViewMetrics(HWND hWnd, KeyboardViewMetrics& out)
 {
@@ -513,7 +506,6 @@ static void EnsureFreeComboPageCreated(HWND hTabParent)
 static constexpr UINT_PTR KEYDRAG_TIMER_ID = 9101;
 static constexpr UINT_PTR KEYSWAP_TIMER_ID = 9102;
 static constexpr UINT_PTR KEYDELETE_TIMER_ID = 9103;
-static constexpr UINT_PTR MOUSE_VIEW_TIMER_ID = 9104; // 60fps refresh for live mouse view
 
 // -----------------------------------------------------------------------------
 // Helpers for action type
@@ -1876,8 +1868,28 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         RECT rc{};
         GetClientRect(hWnd, &rc);
         FillRect(hdc, &rc, UiTheme::Brush_PanelBg());
-        // Draw live mouse view in top-right corner (permanent, visible on all tabs)
-        DrawMouseView(hWnd, hdc);
+        // Draw mouse view with double-buffer to prevent flicker
+        if (g_mouseViewRect.right > g_mouseViewRect.left)
+        {
+            int bw = g_mouseViewRect.right  - g_mouseViewRect.left;
+            int bh = g_mouseViewRect.bottom - g_mouseViewRect.top;
+            HDC memDC = CreateCompatibleDC(hdc);
+            HBITMAP bmp = CreateCompatibleBitmap(hdc, bw, bh);
+            HGDIOBJ old = SelectObject(memDC, bmp);
+            RECT bufRc{0, 0, bw, bh};
+            FillRect(memDC, &bufRc, UiTheme::Brush_PanelBg());
+            SetViewportOrgEx(memDC, -g_mouseViewRect.left, -g_mouseViewRect.top, nullptr);
+            DrawMouseView(hWnd, memDC);
+            SetViewportOrgEx(memDC, 0, 0, nullptr);
+            BitBlt(hdc, g_mouseViewRect.left, g_mouseViewRect.top, bw, bh, memDC, 0, 0, SRCCOPY);
+            SelectObject(memDC, old);
+            DeleteObject(bmp);
+            DeleteDC(memDC);
+        }
+        else
+        {
+            DrawMouseView(hWnd, hdc);
+        }
         EndPaint(hWnd, &ps);
         return 0;
     }
@@ -1885,6 +1897,8 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
     case WM_CREATE:
     {
         HINSTANCE hInst = (HINSTANCE)GetWindowLongPtrW(hWnd, GWLP_HINSTANCE);
+
+        SetTimer(hWnd, 9104, 16, nullptr); // mouse view 60fps timer
 
         Profile_LoadIni(AppPaths_BindingsIni().c_str());
 
@@ -1968,8 +1982,6 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         ResizeSubUi(hWnd);
         TabCtrl_SetCurSel(g_hSubTab, 0);
         ShowSubPage(0);
-        // Start 60fps timer for live mouse view refresh
-        SetTimer(hWnd, MOUSE_VIEW_TIMER_ID, 16, nullptr);
 
         for (uint16_t hid2 : g_hids)
             InvalidateRect(g_btnByHid[hid2], nullptr, FALSE);
@@ -1995,11 +2007,15 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         return 0;
 
     case WM_TIMER:
-        if (wParam == MOUSE_VIEW_TIMER_ID)
+        if (wParam == 9104) // MOUSE_VIEW_TIMER_ID
         {
-            // Refresh only the mouse view rect to avoid redrawing the whole window
-            if (g_mouseViewRect.right > g_mouseViewRect.left)
-                InvalidateRect(hWnd, &g_mouseViewRect, FALSE);
+            BYTE cur = MouseCurrentState();
+            if (cur != g_mouseStatePrev)
+            {
+                g_mouseStatePrev = cur;
+                if (g_mouseViewRect.right > g_mouseViewRect.left)
+                    InvalidateRect(hWnd, &g_mouseViewRect, FALSE);
+            }
             return 0;
         }
         if (wParam == KEYDRAG_TIMER_ID)
