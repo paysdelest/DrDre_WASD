@@ -10,14 +10,6 @@ It reads per-key analog values via the Wooting Analog SDK and publishes XInput-c
 
 ---
 
-## 🆕 What's New in v2.3
-
-- ✅ **Mouse Button Actions** — macros can now send mouse clicks (Left, Right, Middle, X1, X2) as action steps, with a live capture button 🖱 directly in the action panel
-- ✅ **Live Mouse Layout** — a floating top-view mouse silhouette is permanently displayed in the top-right corner of the interface, above the tabs, showing real-time button press state (L, R, M, X1, X2) — mirrors the keyboard layout display
-- ✅ **Scrollable Custom Macro tab** — the right column now fully scrolls with mouse wheel and a draggable scrollbar, so all controls remain accessible even on small screens
-- ✅ **Action type dropdown fixed** — the action type combobox now properly opens as a full 6-item dropdown on click, without requiring mouse wheel scrolling to change the selection
-
----
 
 ## 🆕 What's New in v2.0
 
