@@ -266,7 +266,6 @@ The **Type text** action turns any macro into a **text expander**. Fire a full s
 
 > ⚠️ **Note**: `wooting_analog_sdk.dll` and `wooting_analog_wrapper.dll` are included in the `runtime\` folder of this repository and bundled in the source zip. If downloading v1.0, get them from the [runtime folder](https://github.com/paysdelest/DrDre_WASD/tree/main/runtime) or from [Wooting Analog SDK releases](https://github.com/WootingKb/wooting-analog-sdk/releases) and place them in `runtime\` before building.
 
-> ⚠️ **Note for developers**: `free_combo_system.cpp` and `free_combo_ui.cpp` must be explicitly added to the Visual Studio project (right-click project → **Add → Existing Item**). They are not referenced in the `.vcxproj` by default.
 
 ---
 
@@ -289,8 +288,7 @@ A fix has been submitted upstream to [universal-analog-plugin](https://github.co
 - **Macro does not trigger** — check whether the emergency stop was activated (`Ctrl+Shift+Alt+F12`), or verify the macro is enabled (green dot in the list)
 - **Macro enabled but not firing** — make sure the trigger combination is not captured by another application or system shortcut
 - **Controls do not resize correctly** — make sure you are using v2.0 or later; previous builds had a WM_SIZE layout bug when the tab was hidden
-- **Mouse action not firing** — verify the button name is spelled exactly: `left`, `right`, `middle`, `X1 (thumb)`, or `X2 (thumb2)`
-- **Mouse view not visible** — the silhouette floats in the top-right corner above the tab bar, with no border. It may be clipped on very small windows — try maximizing
+- **Software crash after 4 hours of use** --> check: Get-WinEvent and refer to abiv1.dll step
 
 ### Enable Logging (for debugging)
 
