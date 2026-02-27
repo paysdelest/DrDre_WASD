@@ -16,9 +16,9 @@ It reads per-key analog values via the Wooting Analog SDK and publishes XInput-c
 - ✅ **Live Mouse Layout** — a floating top-view mouse silhouette is permanently displayed in the top-right corner of the interface, above the tabs, showing real-time button press state (L, R, M, X1, X2) — mirrors the keyboard layout display
 - ✅ **Scrollable Custom Macro tab** — the right column now fully scrolls with mouse wheel and a draggable scrollbar, so all controls remain accessible even on small screens
 - ✅ **Action type dropdown fixed** — the action type combobox now properly opens as a full 6-item dropdown on click, without requiring mouse wheel scrolling to change the selection
-- ✅ Custom Macros tab — free-trigger macro system with keyboard/mouse triggers, N-times repeat, cancel-on-release, drag & drop reorder
-- ✅ action deletion directly via the interface using a [X] button
-- ✅ Trigger preview — display the trigger as small gray text below each macro in the list without having to select it
+- ✅ **Custom Macros tab** — free-trigger macro system with keyboard/mouse triggers, N-times repeat, cancel-on-release, drag & drop reorder
+- ✅ **comfort**  action deletion directly via the interface using a [X] button
+- ✅ **Trigger preview** — display the trigger as small gray text below each macro in the list without having to select it
 
 
 ---
@@ -268,14 +268,19 @@ The **Type text** action turns any macro into a **text expander**. Fire a full s
 ---
 
 
+## 🏗️ DrDre_WASD Input Architecture
+
+DrDre_WASD processes input through three distinct pipelines:
+
 - **Analog → Controller**
-
 - **Analog → Macro → Controller**
+- **Analog → Macro → Direct Game (Keyboard Injection)**
 
-- **Analog → Macro → Direct Game (keyboard injection)**
+---
 
+### 🔄 Input Flow Overview
 
-**🏗️ DrDre_WASD Input Architecture**
+```text
                 ┌─────────────────────────┐
                 │   Hall-Effect Keyboard  │
                 └────────────┬────────────┘
@@ -288,19 +293,12 @@ The **Type text** action turns any macro into a **text expander**. Fire a full s
                              ↓
         ┌────────────────────┼────────────────────┐
         ↓                    ↓                    ↓
- Analog Mapping        Macro Engine        Input Injection
+  Analog Mapping        Macro Engine        Input Injection
  (Controller Map)   (Analog & Digital)   (Controller / KB)
         ↓                    ↓                    ↓
       ViGEm             Virtual Input         Windows Input
         ↓                    ↓                    ↓
                      Game Application
-
-
-
-
-
-- **DrDre_WASD does not inject code into games.
-It operates exclusively through virtual devices (ViGEm) and standard Windows input events.**
 
 
 ---
