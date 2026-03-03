@@ -110,6 +110,30 @@ static void InitDpiAwareness()
 }
 
 // ─────────────────────────────────────────────────────────────
+// Mouse PNG : extraction automatique dans assets/ au démarrage
+// ─────────────────────────────────────────────────────────────
+static void EnsureMousePngReady(HINSTANCE hInst)
+{
+    const std::wstring assetsDir = WinUtil_BuildPathNearExe(L"assets");
+    // Créer le dossier assets/ s'il n'existe pas
+    CreateDirectoryW(assetsDir.c_str(), nullptr);
+
+    const std::wstring pngPath = assetsDir + L"\\mouse_transparent_defringed.png";
+    if (!FileExistsNoDir(pngPath))
+    {
+        Logger::Info("MOUSE_PNG", "PNG introuvable, extraction depuis les ressources...");
+        if (ExtractResourceToFile(hInst, IDR_MOUSE_PNG, pngPath))
+            Logger::Info("MOUSE_PNG", "PNG extrait OK -> assets/");
+        else
+            Logger::Warn("MOUSE_PNG", "Echec extraction PNG - vue souris en mode vecteur");
+    }
+    else
+    {
+        Logger::Info("MOUSE_PNG", "PNG deja present sur disque");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 // FreeComboSystem : initialisation et arrêt
 // ─────────────────────────────────────────────────────────────
 static void InitFreeComboSystem()
@@ -169,6 +193,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow)
 
     // 3. DPI
     InitDpiAwareness();
+
+    // 3b. PNG souris (extraction dans assets/ si absent)
+    EnsureMousePngReady(hInst);
 
     // 4. GDI+
     Logger::Info("MAIN", "Avant GdiplusStartup");

@@ -7,12 +7,16 @@
 #define NOMINMAX
 #include <windows.h>
 #include <commctrl.h>
+#include <objidl.h>
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
 
 #include <cstdint>
 #include <vector>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string>
 
 #include "keyboard_ui.h"
 #include "keyboard_ui_state.h"
@@ -61,18 +65,57 @@ static RECT g_mouseViewRect{};
 static int KeyboardBottomPx(HWND hWnd); // forward declaration
 
 // Previous mouse button state — only invalidate when something changes
-static BYTE g_mouseStatePrev = 0xFF; // force first paint
+static BYTE  g_mouseStatePrev = 0xFF;
+
+// Mouse view style (vector fallback only): "Synapse" = sharper, more aggressive polygons.
+// (Photo/PNG mode keeps using glow overlays.)
+static bool g_mouseSynapseMode = true;
+
+enum { MRECT_L=0, MRECT_R=1, MRECT_W=2, MRECT_X1=3, MRECT_X2=4 };
+
+// Normalized rectangles within the IMAGE DEST RECT (not the whole buffer).
+// x,y,w,h in [0..1]. These values are tuned for mouse_transparent_defringed.png.
+static float g_mouseRectN[5][4] =
+{
+    { 0.064f, 0.060f, 0.350f, 0.230f }, // L
+    { 0.592f, 0.058f, 0.360f, 0.230f }, // R
+    { 0.445f, 0.126f, 0.110f, 0.150f }, // Wheel
+    { 0.010f, 0.480f, 0.070f, 0.140f }, // X1(back)
+    { 0.004f, 0.330f, 0.070f, 0.140f }, // X2(forward)
+};
+
+
+
+// Synapse PNG mode: pointed polygons for L/R highlights.
+// Points are normalized in IMAGE DEST space (imgDst), not the whole window.
+enum { MPOLY_L = 0, MPOLY_R = 1, MPOLY_COUNT = 2, MPOLY_PTS = 6 };
+
+static float g_mousePolyN[MPOLY_COUNT][MPOLY_PTS][2] =
+{
+    // L polygon (approx. follows the shell seam of the Viper V3 Pro photo)
+    { {0.075f,0.080f},{0.430f,0.020f},{0.425f,0.150f},{0.420f,0.460f},{0.120f,0.460f},{0.080f,0.405f} }, // L
+    // R polygon
+    { {0.580f,0.150f},{0.585f,0.020f},{0.930f,0.075f},{0.920f,0.410f},{0.890f,0.460f},{0.575f,0.460f} }, // R
+};
+
+// force first paint
+static DWORD g_wheelUpFlash = 0;    // tick when wheel-up was last seen (for flash)
+static DWORD g_wheelDownFlash = 0;    // tick when wheel-down was last seen
 
 static BYTE MouseCurrentState()
 {
     BYTE s = 0;
-    if (GetAsyncKeyState(VK_LBUTTON)  & 0x8000) s |= (1 << 0);
-    if (GetAsyncKeyState(VK_RBUTTON)  & 0x8000) s |= (1 << 1);
-    if (GetAsyncKeyState(VK_MBUTTON)  & 0x8000) s |= (1 << 2);
+    if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) s |= (1 << 0);
+    if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) s |= (1 << 1);
+    if (GetAsyncKeyState(VK_MBUTTON) & 0x8000) s |= (1 << 2);
     if (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) s |= (1 << 3);
     if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) s |= (1 << 4);
     // OR with macro-injected state so simulated clicks light up the view
     s |= FreeComboSystem::GetInjectedMouseState();
+    // Wheel flash: bit 5=up, bit 6=down — active for 120ms after last scroll event
+    DWORD now = GetTickCount();
+    if (now - g_wheelUpFlash < 120) s |= (1 << 5);
+    if (now - g_wheelDownFlash < 120) s |= (1 << 6);
     return s;
 }
 
@@ -88,146 +131,891 @@ static void FillBezierShape(HDC hdc, const POINT* pts, int nPts, HBRUSH br, HPEN
     StrokeAndFillPath(hdc);
 }
 
-static void DrawMouseView(HWND hWnd, HDC hdc)
+static void FillPolyShape(HDC hdc, const POINT* pts, int nPts, HBRUSH br, HPEN pn)
+{
+    if (!pts || nPts < 3) return;
+    HGDIOBJ ob = SelectObject(hdc, br);
+    HGDIOBJ op = SelectObject(hdc, pn);
+    Polygon(hdc, pts, nPts);
+    SelectObject(hdc, ob);
+    SelectObject(hdc, op);
+}
+
+// "Synapse" aggressive polygon mouse (used when no PNG is present, or when you want a sharper look).
+static void DrawMouseView_VectorSynapse(HWND hWnd, HDC hdc)
 {
     RECT wrc{};
     GetClientRect(hWnd, &wrc);
 
     int topPad = S(hWnd, 8);
-    int kbH    = KeyboardBottomPx(hWnd) - topPad;
-    int mvH    = kbH;
-    int mvW    = (int)(mvH * 0.62f);
+    int kbH = KeyboardBottomPx(hWnd) - topPad;
+    int mvH = kbH;
+    int mvW = (int)(mvH * 0.62f);
 
     int cx = wrc.right - mvW / 2 - S(hWnd, 10);
     int cy = topPad + mvH / 2;
 
-    g_mouseViewRect = { cx - mvW/2 - S(hWnd,4), topPad,
-                        cx + mvW/2 + S(hWnd,4), topPad + mvH };
+    g_mouseViewRect = { cx - mvW / 2 - S(hWnd,4), topPad,
+                        cx + mvW / 2 + S(hWnd,4), topPad + mvH };
 
     BYTE ms = g_mouseStatePrev;
-    bool bL  = (ms & (1 << 0)) != 0;
-    bool bR  = (ms & (1 << 1)) != 0;
-    bool bM  = (ms & (1 << 2)) != 0;
+    bool bL = (ms & (1 << 0)) != 0;
+    bool bR = (ms & (1 << 1)) != 0;
+    bool bM = (ms & (1 << 2)) != 0;
     bool bX1 = (ms & (1 << 3)) != 0;
     bool bX2 = (ms & (1 << 4)) != 0;
+    bool bWU = (ms & (1 << 5)) != 0;
+    bool bWD = (ms & (1 << 6)) != 0;
 
-    COLORREF cBody  = RGB(38, 38, 50);
-    COLORREF cBrdB  = RGB(65, 65, 82);
-    COLORREF cIdle  = RGB(48, 48, 62);
-    COLORREF cBrdI  = RGB(72, 72, 92);
-    COLORREF cPress = RGB(50, 140, 255);
-    COLORREF cBrdP  = RGB(90, 175, 255);
-    COLORREF cWheel = RGB(28, 28, 40);
-    COLORREF cWBrd  = RGB(60, 60, 80);
-    COLORREF cSep   = RGB(55, 55, 72);
-    COLORREF cTxt   = RGB(160, 160, 185);
-    COLORREF cTxtP  = RGB(230, 240, 255);
+    // Same palette as the smooth fallback
+    COLORREF cBody = RGB(30, 30, 40);
+    COLORREF cBrdB = RGB(52, 52, 68);
+    COLORREF cIdle = RGB(42, 42, 56);
+    COLORREF cBrdI = RGB(60, 62, 80);
+    COLORREF cPress = RGB(0, 180, 120);
+    COLORREF cBrdP = RGB(0, 220, 150);
+    COLORREF cWheel = RGB(24, 24, 34);
+    COLORREF cWBrd = RGB(50, 52, 68);
+    COLORREF cSep = RGB(48, 48, 64);
+    COLORREF cTxt = RGB(120, 125, 148);
+    COLORREF cTxtP = RGB(210, 255, 235);
+    COLORREF cLine = RGB(55, 58, 76);
+    COLORREF cDot = RGB(65, 68, 88);
+    COLORREF cDotP = RGB(0, 210, 140);
 
     float unit = mvH * 0.5f / 100.0f;
     auto px = [&](float u) -> int { return (int)(cx + u * unit); };
     auto py = [&](float u) -> int { return (int)(cy + u * unit); };
 
-    // Body
+    // ── Body (sharper silhouette) ─────────────────────────────────────────
+    {
+        // A more angular chassis with a defined "nose" and "tail".
+        POINT body[] = {
+            { px(0),   py(-98) },
+            { px(28),  py(-92) },
+            { px(46),  py(-70) },
+            { px(54),  py(-40) },
+            { px(56),  py(-8)  },
+            { px(54),  py(34)  },
+            { px(46),  py(70)  },
+            { px(30),  py(92)  },
+            { px(0),   py(98)  },
+            { px(-30), py(92)  },
+            { px(-46), py(70)  },
+            { px(-54), py(34)  },
+            { px(-56), py(-8)  },
+            { px(-54), py(-40) },
+            { px(-46), py(-70) },
+            { px(-28), py(-92) },
+        };
+        HBRUSH br = CreateSolidBrush(cBody);
+        HPEN   pn = CreatePen(PS_SOLID, 1, cBrdB);
+        FillPolyShape(hdc, body, ARRAYSIZE(body), br, pn);
+        DeleteObject(br);
+        DeleteObject(pn);
+    }
+
+    // ── Left button (sharp inner tip) ─────────────────────────────────────
+    {
+        POINT lbtn[] = {
+            { px(0),   py(-97) },
+            { px(-26), py(-95) },
+            { px(-48), py(-76) },
+            { px(-54), py(-50) },
+            { px(-52), py(-26) },
+            { px(-18), py(-22) },
+            { px(-6),  py(-24) },
+            { px(0),   py(-32) }, // pointed tip toward center
+        };
+        HBRUSH br = CreateSolidBrush(bL ? cPress : cIdle);
+        HPEN   pn = CreatePen(PS_SOLID, 1, bL ? cBrdP : cBrdI);
+        FillPolyShape(hdc, lbtn, ARRAYSIZE(lbtn), br, pn);
+        DeleteObject(br);
+        DeleteObject(pn);
+    }
+
+    // ── Right button (sharp inner tip) ────────────────────────────────────
+    {
+        POINT rbtn[] = {
+            { px(0),   py(-97) },
+            { px(26),  py(-95) },
+            { px(48),  py(-76) },
+            { px(54),  py(-50) },
+            { px(52),  py(-26) },
+            { px(18),  py(-22) },
+            { px(6),   py(-24) },
+            { px(0),   py(-32) }, // pointed tip toward center
+        };
+        HBRUSH br = CreateSolidBrush(bR ? cPress : cIdle);
+        HPEN   pn = CreatePen(PS_SOLID, 1, bR ? cBrdP : cBrdI);
+        FillPolyShape(hdc, rbtn, ARRAYSIZE(rbtn), br, pn);
+        DeleteObject(br);
+        DeleteObject(pn);
+    }
+
+    // ── Separator ─────────────────────────────────────────────────────────
+    {
+        HPEN pn = CreatePen(PS_SOLID, 1, cSep);
+        HGDIOBJ op = SelectObject(hdc, pn);
+        MoveToEx(hdc, px(0), py(-97), nullptr);
+        LineTo(hdc, px(0), py(-22));
+        SelectObject(hdc, op);
+        DeleteObject(pn);
+    }
+
+    // ── Scroll wheel (slightly more angular) ─────────────────────────────
+    {
+        int wx = px(0), wy = py(-52);
+        int ww = S(hWnd, 9), wh = (int)(mvH * 0.20f);
+        RECT wr{ wx - ww / 2, wy - wh / 2, wx + ww / 2, wy + wh / 2 };
+
+        HBRUSH br = CreateSolidBrush(bM ? cPress : cWheel);
+        HPEN   pn = CreatePen(PS_SOLID, 1, bM ? cBrdP : cWBrd);
+        HGDIOBJ ob = SelectObject(hdc, br);
+        HGDIOBJ op = SelectObject(hdc, pn);
+        Rectangle(hdc, wr.left, wr.top, wr.right, wr.bottom);
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        DeleteObject(br);
+        DeleteObject(pn);
+
+        // Wheel-up arrow (▲) above wheel
+        {
+            int ax = wx, ay = wr.top - S(hWnd, 2);
+            int aw = S(hWnd, 6);
+            COLORREF ca = bWU ? cPress : cWBrd;
+            HBRUSH ab = CreateSolidBrush(ca);
+            HPEN   ap = CreatePen(PS_SOLID, 1, ca);
+            POINT tri[] = { {ax, ay - aw}, {ax - aw, ay}, {ax + aw, ay} };
+            FillPolyShape(hdc, tri, 3, ab, ap);
+            DeleteObject(ab);
+            DeleteObject(ap);
+        }
+        // Wheel-down arrow (▼) below wheel
+        {
+            int ax = wx, ay = wr.bottom + S(hWnd, 2);
+            int aw = S(hWnd, 6);
+            COLORREF ca = bWD ? cPress : cWBrd;
+            HBRUSH ab = CreateSolidBrush(ca);
+            HPEN   ap = CreatePen(PS_SOLID, 1, ca);
+            POINT tri[] = { {ax, ay + aw}, {ax - aw, ay}, {ax + aw, ay} };
+            FillPolyShape(hdc, tri, 3, ab, ap);
+            DeleteObject(ab);
+            DeleteObject(ap);
+        }
+    }
+
+    // ── Side buttons X1 / X2 (sharper trapezoids) ─────────────────────────
+    auto DrawSideBtn = [&](float topU, float btmU, bool pressed, const wchar_t* lbl)
+    {
+        int bx1 = px(-56), bx2 = px(-34);
+        int by1 = py(topU), by2 = py(btmU);
+        // Trapezoid with a "bite" toward the body for a gaming look
+        POINT poly[] = {
+            { bx1, by1 },
+            { bx2, by1 + S(hWnd, 2) },
+            { bx2 - S(hWnd, 4), by2 },
+            { bx1, by2 },
+        };
+        HBRUSH br = CreateSolidBrush(pressed ? cPress : cIdle);
+        HPEN   pn = CreatePen(PS_SOLID, 1, pressed ? cBrdP : cBrdI);
+        FillPolyShape(hdc, poly, ARRAYSIZE(poly), br, pn);
+        DeleteObject(br);
+        DeleteObject(pn);
+
+        HFONT hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HFONT oldF = (HFONT)SelectObject(hdc, hf);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, pressed ? cTxtP : cTxt);
+        RECT r{ bx1, by1, bx2, by2 };
+        DrawTextW(hdc, lbl, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(hdc, oldF);
+    };
+    // Keep the same logical mapping as your current visual: top = X1, bottom = X2
+    DrawSideBtn(-15, 12, bX2, L"X2");
+    DrawSideBtn(16, 43, bX1, L"X1");
+
+    // ── Callout labels (same style as smooth fallback) ───────────────────
+    HFONT hfSmall = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    SetBkMode(hdc, TRANSPARENT);
+
+    auto DrawCallout = [&](float anchorX, float anchorY, bool right, bool pressed, const wchar_t* lbl)
+    {
+        int ax = px(anchorX), ay = py(anchorY);
+        int lineLen = S(hWnd, 18);
+        int ex = right ? ax + lineLen : ax - lineLen;
+
+        COLORREF dc = pressed ? cDotP : cDot;
+        HBRUSH db = CreateSolidBrush(dc);
+        HPEN   dp = CreatePen(PS_SOLID, 1, dc);
+        HGDIOBJ ob = SelectObject(hdc, db);
+        HGDIOBJ op = SelectObject(hdc, dp);
+        Ellipse(hdc, ax - S(hWnd, 2), ay - S(hWnd, 2), ax + S(hWnd, 2), ay + S(hWnd, 2));
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        DeleteObject(db);
+        DeleteObject(dp);
+
+        HPEN lp = CreatePen(PS_SOLID, 1, pressed ? cDotP : cLine);
+        HGDIOBJ ol = SelectObject(hdc, lp);
+        MoveToEx(hdc, ax, ay, nullptr);
+        LineTo(hdc, ex, ay);
+        SelectObject(hdc, ol);
+        DeleteObject(lp);
+
+        HFONT oldF = (HFONT)SelectObject(hdc, hfSmall);
+        SetTextColor(hdc, pressed ? cTxtP : cTxt);
+        int tw = S(hWnd, 26);
+        RECT tr;
+        if (right) tr = { ex + S(hWnd,2), ay - S(hWnd,7), ex + tw, ay + S(hWnd,7) };
+        else       tr = { ex - tw,         ay - S(hWnd,7), ex - S(hWnd,2), ay + S(hWnd,7) };
+        DrawTextW(hdc, lbl, -1, &tr,
+            DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | (right ? DT_LEFT : DT_RIGHT));
+        SelectObject(hdc, oldF);
+    };
+
+    DrawCallout(-43.0f, -65.0f, false, bL,  L"L");
+    DrawCallout(-43.0f, -4.0f,  false, bX2, L"X2");
+    DrawCallout(-43.0f, 28.0f,  false, bX1, L"X1");
+
+    DrawCallout(43.0f, -65.0f, true,  bR,  L"R");
+    DrawCallout(8.0f,  -75.0f, true,  bM,  L"M");
+    DrawCallout(8.0f,  -84.0f, true,  bWU, L"▲");
+    DrawCallout(8.0f,  -42.0f, true,  bWD, L"▼");
+}
+
+static void DrawMouseView_VectorFallback(HWND hWnd, HDC hdc)
+{
+    RECT wrc{};
+    GetClientRect(hWnd, &wrc);
+
+    int topPad = S(hWnd, 8);
+    int kbH = KeyboardBottomPx(hWnd) - topPad;
+    int mvH = kbH;
+    int mvW = (int)(mvH * 0.62f);
+
+    int cx = wrc.right - mvW / 2 - S(hWnd, 10);
+    int cy = topPad + mvH / 2;
+
+    g_mouseViewRect = { cx - mvW / 2 - S(hWnd,4), topPad,
+                        cx + mvW / 2 + S(hWnd,4), topPad + mvH };
+
+    BYTE ms = g_mouseStatePrev;
+    bool bL = (ms & (1 << 0)) != 0;
+    bool bR = (ms & (1 << 1)) != 0;
+    bool bM = (ms & (1 << 2)) != 0;
+    bool bX1 = (ms & (1 << 3)) != 0;
+    bool bX2 = (ms & (1 << 4)) != 0;
+    bool bWU = (ms & (1 << 5)) != 0;  // wheel up flash
+    bool bWD = (ms & (1 << 6)) != 0;  // wheel down flash
+
+    // ── Palette flat dark (Razer Synapse inspired) ───────────────────────────
+    COLORREF cBg = RGB(18, 18, 24);   // window background behind mouse
+    COLORREF cBody = RGB(30, 30, 40);   // mouse body fill
+    COLORREF cBrdB = RGB(52, 52, 68);   // body border
+    COLORREF cIdle = RGB(42, 42, 56);   // button idle fill
+    COLORREF cBrdI = RGB(60, 62, 80);   // button idle border
+    COLORREF cPress = RGB(0, 180, 120);  // active — Razer green
+    COLORREF cBrdP = RGB(0, 220, 150);  // active border
+    COLORREF cWheel = RGB(24, 24, 34);   // scroll wheel fill
+    COLORREF cWBrd = RGB(50, 52, 68);   // scroll wheel border
+    COLORREF cSep = RGB(48, 48, 64);   // separator line
+    COLORREF cTxt = RGB(120, 125, 148);// label idle
+    COLORREF cTxtP = RGB(210, 255, 235);// label active
+    COLORREF cLine = RGB(55, 58, 76);   // callout lines
+    COLORREF cDot = RGB(65, 68, 88);   // callout dot idle
+    COLORREF cDotP = RGB(0, 210, 140);  // callout dot active
+
+    float unit = mvH * 0.5f / 100.0f;
+    auto px = [&](float u) -> int { return (int)(cx + u * unit); };
+    auto py = [&](float u) -> int { return (int)(cy + u * unit); };
+
+    // ── Body ─────────────────────────────────────────────────────────────────
     {
         POINT body[] = {
-            {px( 0),  py(-98)},
-            {px( 22), py(-98)}, {px( 46), py(-75)}, {px( 48), py(-45)},
-            {px( 50), py(-10)}, {px( 50), py( 30)}, {px( 46), py( 65)},
-            {px( 42), py( 90)}, {px( 22), py( 98)}, {px(  0), py( 98)},
-            {px(-22), py( 98)}, {px(-42), py( 90)}, {px(-46), py( 65)},
-            {px(-50), py( 30)}, {px(-50), py(-10)}, {px(-48), py(-45)},
-            {px(-46), py(-75)}, {px(-22), py(-98)}, {px(  0), py(-98)},
+            {px(0),  py(-98)},
+            {px(22), py(-98)}, {px(46), py(-75)}, {px(48), py(-45)},
+            {px(50), py(-10)}, {px(50), py(30)}, {px(46), py(65)},
+            {px(42), py(90)}, {px(22), py(98)}, {px(0), py(98)},
+            {px(-22), py(98)}, {px(-42), py(90)}, {px(-46), py(65)},
+            {px(-50), py(30)}, {px(-50), py(-10)}, {px(-48), py(-45)},
+            {px(-46), py(-75)}, {px(-22), py(-98)}, {px(0), py(-98)},
         };
         HBRUSH br = CreateSolidBrush(cBody);
         HPEN   pn = CreatePen(PS_SOLID, 1, cBrdB);
         FillBezierShape(hdc, body, ARRAYSIZE(body), br, pn);
         DeleteObject(br); DeleteObject(pn);
     }
-    // Left button
+
+    // ── Left button ──────────────────────────────────────────────────────────
     {
         POINT lbtn[] = {
-            {px( 0),  py(-97)},
+            {px(0),  py(-97)},
             {px(-2),  py(-97)}, {px(-22), py(-87)}, {px(-40), py(-64)},
-            {px(-43), py(-48)}, {px(-43), py(-22)}, {px( -2), py(-22)},
-            {px(-1),  py(-22)}, {px(  0), py(-22)}, {px(  0), py(-97)},
+            {px(-43), py(-48)}, {px(-43), py(-22)}, {px(-2), py(-22)},
+            {px(-1),  py(-22)}, {px(0), py(-22)}, {px(0), py(-97)},
         };
         HBRUSH br = CreateSolidBrush(bL ? cPress : cIdle);
         HPEN   pn = CreatePen(PS_SOLID, 1, bL ? cBrdP : cBrdI);
         FillBezierShape(hdc, lbtn, ARRAYSIZE(lbtn), br, pn);
         DeleteObject(br); DeleteObject(pn);
     }
-    // Right button
+
+    // ── Right button ─────────────────────────────────────────────────────────
     {
         POINT rbtn[] = {
-            {px( 0),  py(-97)},
-            {px( 2),  py(-97)}, {px( 22), py(-87)}, {px( 40), py(-64)},
-            {px( 43), py(-48)}, {px( 43), py(-22)}, {px(  2), py(-22)},
-            {px( 1),  py(-22)}, {px(  0), py(-22)}, {px(  0), py(-97)},
+            {px(0),  py(-97)},
+            {px(2),  py(-97)}, {px(22), py(-87)}, {px(40), py(-64)},
+            {px(43), py(-48)}, {px(43), py(-22)}, {px(2), py(-22)},
+            {px(1),  py(-22)}, {px(0), py(-22)}, {px(0), py(-97)},
         };
         HBRUSH br = CreateSolidBrush(bR ? cPress : cIdle);
         HPEN   pn = CreatePen(PS_SOLID, 1, bR ? cBrdP : cBrdI);
         FillBezierShape(hdc, rbtn, ARRAYSIZE(rbtn), br, pn);
         DeleteObject(br); DeleteObject(pn);
     }
-    // Separator
+
+    // ── Separator ────────────────────────────────────────────────────────────
     {
         HPEN pn = CreatePen(PS_SOLID, 1, cSep);
         HGDIOBJ op = SelectObject(hdc, pn);
         MoveToEx(hdc, px(0), py(-97), nullptr);
-        LineTo   (hdc, px(0), py(-22));
+        LineTo(hdc, px(0), py(-22));
         SelectObject(hdc, op); DeleteObject(pn);
     }
-    // Scroll wheel
+
+    // ── Scroll wheel ─────────────────────────────────────────────────────────
     {
-        int wx = px(0), wy = py(-57);
-        int ww = S(hWnd, 9), wh = (int)(mvH * 0.22f);
-        RECT wr{ wx-ww/2, wy-wh/2, wx+ww/2, wy+wh/2 };
+        int wx = px(0), wy = py(-52);
+        int ww = S(hWnd, 8), wh = (int)(mvH * 0.20f);
+        RECT wr{ wx - ww / 2, wy - wh / 2, wx + ww / 2, wy + wh / 2 };
+        // Wheel body
         HBRUSH br = CreateSolidBrush(bM ? cPress : cWheel);
         HPEN   pn = CreatePen(PS_SOLID, 1, bM ? cBrdP : cWBrd);
         HGDIOBJ ob = SelectObject(hdc, br);
         HGDIOBJ op = SelectObject(hdc, pn);
-        RoundRect(hdc, wr.left, wr.top, wr.right, wr.bottom, S(hWnd,4), S(hWnd,4));
+        RoundRect(hdc, wr.left, wr.top, wr.right, wr.bottom, S(hWnd, 3), S(hWnd, 3));
         SelectObject(hdc, ob); SelectObject(hdc, op);
         DeleteObject(br); DeleteObject(pn);
-    }
-    // Side buttons X1 / X2
-    auto DrawSideBtn = [&](float topU, float btmU, bool pressed, const wchar_t* lbl)
-    {
-        int bx1 = px(-52), bx2 = px(-36);
-        int by1 = py(topU), by2 = py(btmU);
-        HBRUSH br = CreateSolidBrush(pressed ? cPress : cIdle);
-        HPEN   pn = CreatePen(PS_SOLID, 1, pressed ? cBrdP : cBrdI);
-        HGDIOBJ ob = SelectObject(hdc, br);
-        HGDIOBJ op = SelectObject(hdc, pn);
-        RoundRect(hdc, bx1, by1, bx2, by2, S(hWnd,3), S(hWnd,3));
-        SelectObject(hdc, ob); SelectObject(hdc, op);
-        DeleteObject(br); DeleteObject(pn);
-        HFONT hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-        HFONT oldF = (HFONT)SelectObject(hdc, hf);
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, pressed ? cTxtP : cTxt);
-        RECT r{bx1, by1, bx2, by2};
-        DrawTextW(hdc, lbl, -1, &r, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
-        SelectObject(hdc, oldF);
-    };
-    DrawSideBtn(-15, 12, bX2, L"X1");
-    DrawSideBtn( 16, 43, bX1, L"X2");
 
-    // Labels L / R
-    HFONT hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-    auto DrawLabel = [&](float ux, float uy, bool pressed, const wchar_t* lbl)
-    {
-        RECT r{ px((int)ux)-S(hWnd,12), py((int)uy)-S(hWnd,7),
-                px((int)ux)+S(hWnd,12), py((int)uy)+S(hWnd,7) };
-        HFONT oldF = (HFONT)SelectObject(hdc, hf);
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, pressed ? cTxtP : cTxt);
-        DrawTextW(hdc, lbl, -1, &r, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
-        SelectObject(hdc, oldF);
-    };
-    DrawLabel(-22, -65, bL, L"L");
-    DrawLabel( 22, -65, bR, L"R");
+        // Wheel-up arrow (▲) above wheel
+        {
+            int ax = wx, ay = wr.top - S(hWnd, 2);
+            int aw = S(hWnd, 5);
+            COLORREF ca = bWU ? cPress : cWBrd;
+            HBRUSH ab = CreateSolidBrush(ca);
+            HPEN   ap = CreatePen(PS_SOLID, 1, ca);
+            POINT tri[] = { {ax, ay - aw}, {ax - aw, ay}, {ax + aw, ay} };
+            HGDIOBJ ob2 = SelectObject(hdc, ab);
+            HGDIOBJ op2 = SelectObject(hdc, ap);
+            Polygon(hdc, tri, 3);
+            SelectObject(hdc, ob2); SelectObject(hdc, op2);
+            DeleteObject(ab); DeleteObject(ap);
+        }
+        // Wheel-down arrow (▼) below wheel
+        {
+            int ax = wx, ay = wr.bottom + S(hWnd, 2);
+            int aw = S(hWnd, 5);
+            COLORREF ca = bWD ? cPress : cWBrd;
+            HBRUSH ab = CreateSolidBrush(ca);
+            HPEN   ap = CreatePen(PS_SOLID, 1, ca);
+            POINT tri[] = { {ax, ay + aw}, {ax - aw, ay}, {ax + aw, ay} };
+            HGDIOBJ ob2 = SelectObject(hdc, ab);
+            HGDIOBJ op2 = SelectObject(hdc, ap);
+            Polygon(hdc, tri, 3);
+            SelectObject(hdc, ob2); SelectObject(hdc, op2);
+            DeleteObject(ab); DeleteObject(ap);
+        }
+    }
+
+    // ── Side buttons X1 / X2 (left flank) ───────────────────────────────────
+    auto DrawSideBtn = [&](float topU, float btmU, bool pressed, const wchar_t* lbl)
+        {
+            int bx1 = px(-52), bx2 = px(-36);
+            int by1 = py(topU), by2 = py(btmU);
+            HBRUSH br = CreateSolidBrush(pressed ? cPress : cIdle);
+            HPEN   pn = CreatePen(PS_SOLID, 1, pressed ? cBrdP : cBrdI);
+            HGDIOBJ ob = SelectObject(hdc, br);
+            HGDIOBJ op = SelectObject(hdc, pn);
+            RoundRect(hdc, bx1, by1, bx2, by2, S(hWnd, 3), S(hWnd, 3));
+            SelectObject(hdc, ob); SelectObject(hdc, op);
+            DeleteObject(br); DeleteObject(pn);
+            HFONT hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            HFONT oldF = (HFONT)SelectObject(hdc, hf);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, pressed ? cTxtP : cTxt);
+            RECT r{ bx1, by1, bx2, by2 };
+            DrawTextW(hdc, lbl, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(hdc, oldF);
+        };
+    DrawSideBtn(-15, 12, bX2, L"X2");
+    DrawSideBtn(16, 43, bX1, L"X1");
+
+    // ── Callout labels style Razer Synapse ───────────────────────────────────
+    // Petite ligne horizontale + point d'ancrage + texte à droite ou gauche
+    HFONT hfSmall = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    SetBkMode(hdc, TRANSPARENT);
+
+    auto DrawCallout = [&](float anchorX, float anchorY,
+        bool right, bool pressed, const wchar_t* lbl)
+        {
+            int ax = px(anchorX), ay = py(anchorY);
+            int lineLen = S(hWnd, 18);
+            int ex = right ? ax + lineLen : ax - lineLen;
+
+            // Dot at anchor
+            COLORREF dc = pressed ? cDotP : cDot;
+            HBRUSH db = CreateSolidBrush(dc);
+            HPEN   dp = CreatePen(PS_SOLID, 1, dc);
+            HGDIOBJ ob = SelectObject(hdc, db);
+            HGDIOBJ op = SelectObject(hdc, dp);
+            Ellipse(hdc, ax - S(hWnd, 2), ay - S(hWnd, 2), ax + S(hWnd, 2), ay + S(hWnd, 2));
+            SelectObject(hdc, ob); SelectObject(hdc, op);
+            DeleteObject(db); DeleteObject(dp);
+
+            // Horizontal line
+            HPEN lp = CreatePen(PS_SOLID, 1, pressed ? cDotP : cLine);
+            HGDIOBJ ol = SelectObject(hdc, lp);
+            MoveToEx(hdc, ax, ay, nullptr);
+            LineTo(hdc, ex, ay);
+            SelectObject(hdc, ol); DeleteObject(lp);
+
+            // Text
+            HFONT oldF = (HFONT)SelectObject(hdc, hfSmall);
+            SetTextColor(hdc, pressed ? cTxtP : cTxt);
+            int tw = S(hWnd, 26);
+            RECT tr;
+            if (right) tr = { ex + S(hWnd,2), ay - S(hWnd,7), ex + tw, ay + S(hWnd,7) };
+            else       tr = { ex - tw,         ay - S(hWnd,7), ex - S(hWnd,2), ay + S(hWnd,7) };
+            DrawTextW(hdc, lbl, -1, &tr,
+                DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
+                (right ? DT_LEFT : DT_RIGHT));
+            SelectObject(hdc, oldF);
+        };
+
+    // Left side callouts (pointing right toward mouse)
+    DrawCallout(-43.0f, -65.0f, false, bL, L"L");
+    DrawCallout(-43.0f, -4.0f, false, bX2, L"X2");
+    DrawCallout(-43.0f, 28.0f, false, bX1, L"X1");
+
+    // Right side callouts
+    DrawCallout(43.0f, -65.0f, true, bR, L"R");
+    DrawCallout(8.0f, -75.0f, true, bM, L"M");
+    DrawCallout(8.0f, -84.0f, true, bWU, L"▲");  // ▲ wheel up
+    DrawCallout(8.0f, -42.0f, true, bWD, L"▼");  // ▼ wheel down
 }
+
+// ---------- Photo mouse overlay (optional) + Calibration Mode ----------
+static ULONG_PTR g_mouseGdiToken = 0;
+static bool g_mouseGdiInit = false;
+static Gdiplus::Bitmap* g_mouseBmp = nullptr;
+
+static void MouseEnsureGdiPlus()
+{
+    if (g_mouseGdiInit) return;
+    Gdiplus::GdiplusStartupInput si;
+    if (Gdiplus::GdiplusStartup(&g_mouseGdiToken, &si, nullptr) == Gdiplus::Ok)
+        g_mouseGdiInit = true;
+}
+
+static std::wstring MouseGetExeDir()
+{
+    wchar_t p[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, p, MAX_PATH);
+    std::wstring s(p);
+    size_t k = s.find_last_of(L"\\/");
+    if (k != std::wstring::npos) s.resize(k);
+    return s;
+}
+
+static std::wstring MouseGetCwd()
+{
+    wchar_t p[MAX_PATH]{};
+    GetCurrentDirectoryW(MAX_PATH, p);
+    return std::wstring(p);
+}
+
+static void MouseTryLoad(const std::wstring& path)
+{
+    if (g_mouseBmp) return;
+    Gdiplus::Bitmap* b = Gdiplus::Bitmap::FromFile(path.c_str(), FALSE);
+    if (b && b->GetLastStatus() == Gdiplus::Ok) { g_mouseBmp = b; return; }
+    if (b) delete b;
+}
+
+static void MouseLoadBitmapOnce()
+{
+    if (g_mouseBmp) return;
+    MouseEnsureGdiPlus();
+
+    const std::wstring exeDir = MouseGetExeDir();
+    const std::wstring cwd    = MouseGetCwd();
+    const std::wstring names[] =
+    {
+        L"mouse.png",
+        L"mouse_transparent_defringed.png",
+        L"mouse_transparent.png",
+        L"mouse_razer_viper_v3_pro.png"
+    };
+
+    for (const auto& n : names)
+    {
+        MouseTryLoad(exeDir + L"\\assets\\" + n);
+        MouseTryLoad(exeDir + L"\\" + n);
+        MouseTryLoad(cwd    + L"\\assets\\" + n);
+        MouseTryLoad(cwd    + L"\\" + n);
+        if (g_mouseBmp) break;
+    }
+}
+
+static void MouseDrawGlowRect(Gdiplus::Graphics& g, const Gdiplus::RectF& r, bool on, const Gdiplus::Color& core)
+{
+    if (!on) return;
+    using namespace Gdiplus;
+
+    auto AddRoundRect = [&](GraphicsPath& p, RectF rr, REAL rad)
+    {
+        REAL d = rad * 2.0f;
+        p.AddArc(rr.X, rr.Y, d, d, 180, 90);
+        p.AddArc(rr.X + rr.Width - d, rr.Y, d, d, 270, 90);
+        p.AddArc(rr.X + rr.Width - d, rr.Y + rr.Height - d, d, d, 0, 90);
+        p.AddArc(rr.X, rr.Y + rr.Height - d, d, d, 90, 90);
+        p.CloseFigure();
+    };
+
+    // Synapse-like green glow stack
+    const Color c1(46, core.GetR(), core.GetG(), core.GetB());
+    const Color c2(28, core.GetR(), core.GetG(), core.GetB());
+    const Color c3(16, core.GetR(), core.GetG(), core.GetB());
+
+    REAL rad = std::max<REAL>(6.0f, r.Height * 0.18f);
+    for (int i = 0; i < 3; ++i)
+    {
+        RectF e = r;
+        e.Inflate(4.0f + i * 3.0f, 4.0f + i * 3.0f);
+        GraphicsPath p(FillModeWinding);
+        AddRoundRect(p, e, rad + i * 2.0f);
+        SolidBrush br(i == 0 ? c1 : (i == 1 ? c2 : c3));
+        g.FillPath(&br, &p);
+    }
+
+    GraphicsPath p2(FillModeWinding);
+    AddRoundRect(p2, r, rad);
+    Pen p(Color(120, core.GetR(), core.GetG(), core.GetB()), 2.0f);
+    g.DrawPath(&p, &p2);
+}
+
+
+// ---------- Synapse-style sharp polygon overlay (PNG mode) ----------
+// We keep wheel + X buttons as rectangular regions (already calibrated).
+// L/R are rendered as sharp polygons built from their calibrated rectangles.
+static void MouseBuildSynapseLRPath(Gdiplus::GraphicsPath& out, const Gdiplus::RectF& r, bool left)
+{
+    using namespace Gdiplus;
+    out.Reset();
+
+    const REAL x0 = r.X;
+    const REAL y0 = r.Y;
+    const REAL x1 = r.X + r.Width;
+    const REAL y1 = r.Y + r.Height;
+
+    // Tunables (feel free to tweak; rect calibration stays valid)
+    const REAL innerTopX = left ? (x0 + r.Width * 0.58f) : (x1 - r.Width * 0.58f);
+    const REAL innerBotX = left ? (x0 + r.Width * 0.62f) : (x1 - r.Width * 0.62f);
+
+    const REAL tipX      = left ? (x0 - r.Width * 0.10f) : (x1 + r.Width * 0.10f);
+    const REAL tipY      = y0 + r.Height * 0.18f;
+
+    const REAL outerTopX = left ? (x0 + r.Width * 0.08f) : (x1 - r.Width * 0.08f);
+    const REAL outerTopY = y0 + r.Height * 0.03f;
+
+    const REAL outerBotX = left ? (x0 + r.Width * 0.10f) : (x1 - r.Width * 0.10f);
+    const REAL outerBotY = y1 - r.Height * 0.08f;
+
+    const REAL innerMidY = y0 + r.Height * 0.55f;
+
+    PointF pts[6]{};
+    if (left)
+    {
+        pts[0] = PointF(innerTopX, y0);        // inner top (near middle split)
+        pts[1] = PointF(outerTopX, outerTopY); // outer top
+        pts[2] = PointF(tipX,      tipY);      // sharp forward tip (aggressive)
+        pts[3] = PointF(outerBotX, outerBotY); // outer bottom
+        pts[4] = PointF(innerBotX, y1);        // inner bottom
+        pts[5] = PointF(innerTopX + r.Width * 0.02f, innerMidY); // inner mid
+    }
+    else
+    {
+        pts[0] = PointF(innerTopX, y0);
+        pts[1] = PointF(outerTopX, outerTopY);
+        pts[2] = PointF(tipX,      tipY);
+        pts[3] = PointF(outerBotX, outerBotY);
+        pts[4] = PointF(innerBotX, y1);
+        pts[5] = PointF(innerTopX - r.Width * 0.02f, innerMidY);
+    }
+
+    out.AddPolygon(pts, 6);
+}
+
+static void MouseDrawGlowPath(Gdiplus::Graphics& g, Gdiplus::GraphicsPath& path, bool on, const Gdiplus::Color& core)
+{
+    if (!on) return;
+    using namespace Gdiplus;
+
+    const Color c0(70, core.GetR(), core.GetG(), core.GetB());
+    const Color c1(38, core.GetR(), core.GetG(), core.GetB());
+    const Color c2(20, core.GetR(), core.GetG(), core.GetB());
+
+    // Draw a stacked outline glow. Keep corners sharp (Synapse-like).
+    Pen p0(c0, 10.0f); p0.SetLineJoin(LineJoinMiter); p0.SetMiterLimit(2.0f);
+    Pen p1(c1,  6.0f); p1.SetLineJoin(LineJoinMiter); p1.SetMiterLimit(2.0f);
+    Pen p2(c2,  3.0f); p2.SetLineJoin(LineJoinMiter); p2.SetMiterLimit(2.0f);
+    g.DrawPath(&p0, &path);
+    g.DrawPath(&p1, &path);
+    g.DrawPath(&p2, &path);
+
+    // Core border
+    Pen p3(Color(160, core.GetR(), core.GetG(), core.GetB()), 2.0f);
+    p3.SetLineJoin(LineJoinMiter); p3.SetMiterLimit(2.0f);
+    g.DrawPath(&p3, &path);
+}
+
+static void MouseBuildPolyPathFromNorm(Gdiplus::GraphicsPath& out, const Gdiplus::RectF& imgDst, int side)
+{
+    using namespace Gdiplus;
+    side = std::clamp(side, 0, MPOLY_COUNT - 1);
+
+    PointF pts[MPOLY_PTS]{};
+    for (int i = 0; i < MPOLY_PTS; ++i)
+    {
+        float nx = g_mousePolyN[side][i][0];
+        float ny = g_mousePolyN[side][i][1];
+        pts[i] = PointF(imgDst.X + imgDst.Width * nx, imgDst.Y + imgDst.Height * ny);
+    }
+
+    out.Reset();
+    out.AddPolygon(pts, MPOLY_PTS);
+}
+
+static void MouseDrawIdleOutlinePath(Gdiplus::Graphics& g, Gdiplus::GraphicsPath& path, const Gdiplus::Color& c)
+{
+    using namespace Gdiplus;
+    Pen p(c, 1.5f);
+    p.SetLineJoin(LineJoinMiter);
+    p.SetMiterLimit(2.0f);
+    g.DrawPath(&p, &path);
+}
+
+
+void DrawMouseView(HWND hWnd, HDC hdc)
+{
+    // First compute the mouse view rect (same as original)
+    RECT wrc{}; GetClientRect(hWnd, &wrc);
+    int topPad = S(hWnd, 8);
+    int mvH = S(hWnd, 235);
+    int mvW = (int)(mvH * 0.62f);
+
+    int cx = wrc.right - mvW / 2 - S(hWnd, 10);
+    g_mouseViewRect = { cx - mvW / 2 - S(hWnd,4), topPad,
+                        cx + mvW / 2 + S(hWnd,4), topPad + mvH };
+
+    const int bw = g_mouseViewRect.right - g_mouseViewRect.left;
+    const int bh = g_mouseViewRect.bottom - g_mouseViewRect.top;
+    if (bw <= 0 || bh <= 0)
+        return;
+
+    BYTE ms = g_mouseStatePrev;
+    const bool bL  = (ms & (1 << 0)) != 0;
+    const bool bR  = (ms & (1 << 1)) != 0;
+    const bool bM  = (ms & (1 << 2)) != 0;
+    const bool bX1 = (ms & (1 << 3)) != 0; // XBUTTON1 (Back)
+    const bool bX2 = (ms & (1 << 4)) != 0; // XBUTTON2 (Forward)
+    const bool bWU = (ms & (1 << 5)) != 0; // wheel up flash
+    const bool bWD = (ms & (1 << 6)) != 0; // wheel down flash
+
+    MouseLoadBitmapOnce();
+
+    // If no photo available: fallback to your old vector mouse view (so users don't need a PNG).
+    if (!g_mouseBmp)
+    {
+        if (g_mouseSynapseMode)
+            DrawMouseView_VectorSynapse(hWnd, hdc);
+        else
+            DrawMouseView_VectorFallback(hWnd, hdc);
+        return;
+    }
+
+    using namespace Gdiplus;
+    Graphics g(hdc);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+    g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+
+    // Panel background already filled by caller buffer; keep clean
+    RectF rc((REAL)g_mouseViewRect.left, (REAL)g_mouseViewRect.top, (REAL)bw, (REAL)bh);
+
+    const REAL pad = (REAL)S(hWnd, 6);
+
+    // Fit image into rc with aspect
+    const REAL iw = (REAL)g_mouseBmp->GetWidth();
+    const REAL ih = (REAL)g_mouseBmp->GetHeight();
+    REAL availW = rc.Width  - pad * 2.0f;
+    REAL availH = rc.Height - pad * 2.0f;
+    REAL s = (availW / iw < availH / ih) ? (availW / iw) : (availH / ih);
+    REAL dw = iw * s, dh = ih * s;
+    REAL dx = rc.X + (rc.Width  - dw) * 0.5f;
+    REAL dy = rc.Y + (rc.Height - dh) * 0.5f;
+
+    
+RectF imgDst(dx, dy, dw, dh);
+// Draw mouse image (treat near-white background as transparent)
+    {
+        ImageAttributes ia;
+        ia.SetColorKey(Color(255, 235, 235, 235), Color(255, 255, 255, 255), ColorAdjustTypeBitmap);
+        g.DrawImage(g_mouseBmp, imgDst,
+            0.0f, 0.0f, iw, ih,
+            UnitPixel, &ia);
+    }
+
+    // Map normalized rect -> pixel rect in image
+    auto NR = [&](int idx)->RectF
+    {
+        const float nx = g_mouseRectN[idx][0];
+        const float ny = g_mouseRectN[idx][1];
+        const float nw = g_mouseRectN[idx][2];
+        const float nh = g_mouseRectN[idx][3];
+        return RectF(imgDst.X + imgDst.Width * nx, imgDst.Y + imgDst.Height * ny,
+                     imgDst.Width * nw, imgDst.Height * nh);
+    };
+
+    const Color green(0, 0, 0, 0); // dummy
+
+    // Glows / outlines
+    const Color synGreen(68, 214, 44);
+
+    // X1(back)=lower button, X2(forward)=upper button on Viper V3 Pro photo.
+    // MRECT_X1 rect is physically lower, MRECT_X2 is higher — swap booleans to match.
+    MouseDrawGlowRect(g, NR(MRECT_X1), bX1, synGreen);  // lower rect = X1
+    MouseDrawGlowRect(g, NR(MRECT_X2), bX2, synGreen);  // upper rect = X2
+    MouseDrawGlowRect(g, NR(MRECT_W),  bM,  synGreen);
+
+    // L / R : Synapse sharp polygon mode (calibratable polygons)
+    if (g_mouseSynapseMode)
+    {
+        const Color idleOutline(70, 120, 125, 148); // subtle outline when idle
+
+        GraphicsPath pL(FillModeWinding), pR(FillModeWinding);
+        MouseBuildPolyPathFromNorm(pL, imgDst, MPOLY_L);
+        MouseBuildPolyPathFromNorm(pR, imgDst, MPOLY_R);
+
+        MouseDrawIdleOutlinePath(g, pL, idleOutline);
+        MouseDrawIdleOutlinePath(g, pR, idleOutline);
+
+        MouseDrawGlowPath(g, pL, bL, synGreen);
+        MouseDrawGlowPath(g, pR, bR, synGreen);
+    }
+    else
+    {
+        // Classic rectangular glow (legacy)
+        MouseDrawGlowRect(g, NR(MRECT_L), bL, synGreen);
+        MouseDrawGlowRect(g, NR(MRECT_R), bR, synGreen);
+    }
+
+    // Wheel up/down arrows (flash)
+    if (bWU || bWD)
+    {
+        Pen p(Color(160, synGreen.GetR(), synGreen.GetG(), synGreen.GetB()), 2.0f);
+        RectF rW = NR(MRECT_W);
+        PointF up[3] = { PointF(rW.X + rW.Width*0.5f, rW.Y + rW.Height*0.05f),
+                         PointF(rW.X + rW.Width*0.3f, rW.Y + rW.Height*0.18f),
+                         PointF(rW.X + rW.Width*0.7f, rW.Y + rW.Height*0.18f) };
+        PointF dn[3] = { PointF(rW.X + rW.Width*0.5f, rW.Y + rW.Height*0.95f),
+                         PointF(rW.X + rW.Width*0.3f, rW.Y + rW.Height*0.82f),
+                         PointF(rW.X + rW.Width*0.7f, rW.Y + rW.Height*0.82f) };
+        if (bWU) g.DrawPolygon(&p, up, 3);
+        if (bWD) g.DrawPolygon(&p, dn, 3);
+    }
+
+    // ── L/R centrés sur les boutons (GDI+) ──────────────────────────────────
+    {
+        using namespace Gdiplus;
+        FontFamily ff(L"Segoe UI");
+        bool ok = (ff.GetLastStatus() == Ok);
+        Font fnt(ok ? L"Segoe UI Light" : L"Segoe UI", 9.0f, FontStyleRegular, UnitPoint);
+        StringFormat sf;
+        sf.SetAlignment(StringAlignmentCenter);
+        sf.SetLineAlignment(StringAlignmentCenter);
+        RectF rL = NR(MRECT_L), rR = NR(MRECT_R);
+        // L
+        {
+            BYTE a = bL ? 220 : 68;
+            Color c(a, bL?68:105, bL?214:115, bL?44:140);
+            SolidBrush br(c);
+            RectF tr(rL.X + rL.Width*0.15f, rL.Y + rL.Height*0.28f,
+                     rL.Width*0.58f, rL.Height*0.44f);
+            g.DrawString(L"L", -1, &fnt, tr, &sf, &br);
+        }
+        // R
+        {
+            BYTE a = bR ? 220 : 68;
+            Color c(a, bR?68:105, bR?214:115, bR?44:140);
+            SolidBrush br(c);
+            RectF tr(rR.X + rR.Width*0.27f, rR.Y + rR.Height*0.28f,
+                     rR.Width*0.58f, rR.Height*0.44f);
+            g.DrawString(L"R", -1, &fnt, tr, &sf, &br);
+        }
+    }
+
+    // ── X1/X2 callouts : ligne fine qui s'estompe + label ────────────────────
+    {
+        using namespace Gdiplus;
+        FontFamily ff(L"Segoe UI");
+        bool ok = (ff.GetLastStatus() == Ok);
+        Font fntSm(ok ? L"Segoe UI" : L"Arial", 7.0f, FontStyleRegular, UnitPoint);
+        StringFormat sfEnd;
+        sfEnd.SetAlignment(StringAlignmentFar);
+        sfEnd.SetLineAlignment(StringAlignmentCenter);
+
+        // MRECT_X1 = zone basse = X1 (back),  MRECT_X2 = zone haute = X2 (forward)
+        RectF rX1 = NR(MRECT_X1);
+        RectF rX2 = NR(MRECT_X2);
+        float lineLen = imgDst.Width * 0.22f;
+
+        auto DrawXCallout = [&](RectF zone, bool active, const wchar_t* lbl)
+        {
+            float ax = zone.X;
+            float ay = zone.Y + zone.Height * 0.5f;
+            Color cA(255, 68, 214, 44);   // vert Razer actif
+            Color cI(255, 85, 95, 115);   // gris discret idle
+            Color cU = active ? cA : cI;
+            BYTE aLine = active ? 175 : 38;
+            BYTE aTxt  = active ? 205 : 68;
+
+            // Dot d'ancrage
+            SolidBrush dotBr(Color(aTxt, cU.GetR(), cU.GetG(), cU.GetB()));
+            REAL dr = active ? 2.5f : 1.8f;
+            g.FillEllipse(&dotBr, ax-dr, ay-dr, dr*2.0f, dr*2.0f);
+
+            // Ligne en 4 segments qui s'estompe vers l'extrémité
+            for (int i = 0; i < 4; ++i)
+            {
+                float t0 = i / 4.0f, t1 = (i+1) / 4.0f;
+                BYTE  a0 = (BYTE)(aLine * (1.0f - t0 * 0.72f));
+                Pen sp(Color(a0, cU.GetR(), cU.GetG(), cU.GetB()), 1.0f);
+                g.DrawLine(&sp, ax - lineLen*t0, ay, ax - lineLen*t1, ay);
+            }
+
+            // Label aligné à droite au bout
+            SolidBrush txtBr(Color(aTxt, cU.GetR(), cU.GetG(), cU.GetB()));
+            RectF tr(ax - lineLen - 22.0f, ay - 8.0f, 22.0f, 16.0f);
+            g.DrawString(lbl, -1, &fntSm, tr, &sfEnd, &txtBr);
+        };
+
+        DrawXCallout(rX1, bX1, L"X1");
+        DrawXCallout(rX2, bX2, L"X2");
+    }
+}
+
 
 static void ComputeKeyboardViewMetrics(HWND hWnd, KeyboardViewMetrics& out)
 {
@@ -1871,12 +2659,12 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         // Draw mouse view with double-buffer to prevent flicker
         if (g_mouseViewRect.right > g_mouseViewRect.left)
         {
-            int bw = g_mouseViewRect.right  - g_mouseViewRect.left;
+            int bw = g_mouseViewRect.right - g_mouseViewRect.left;
             int bh = g_mouseViewRect.bottom - g_mouseViewRect.top;
             HDC memDC = CreateCompatibleDC(hdc);
             HBITMAP bmp = CreateCompatibleBitmap(hdc, bw, bh);
             HGDIOBJ old = SelectObject(memDC, bmp);
-            RECT bufRc{0, 0, bw, bh};
+            RECT bufRc{ 0, 0, bw, bh };
             FillRect(memDC, &bufRc, UiTheme::Brush_PanelBg());
             SetViewportOrgEx(memDC, -g_mouseViewRect.left, -g_mouseViewRect.top, nullptr);
             DrawMouseView(hWnd, memDC);
@@ -1899,6 +2687,8 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         HINSTANCE hInst = (HINSTANCE)GetWindowLongPtrW(hWnd, GWLP_HINSTANCE);
 
         SetTimer(hWnd, 9104, 16, nullptr); // mouse view 60fps timer
+        // Hotkeys for mouse overlay calibration (works even when focus is on child controls)
+        RegisterHotKey(hWnd, 0xC08, MOD_NOREPEAT, VK_F8);  // toggle Synapse vector mode (when no PNG)
 
         Profile_LoadIni(AppPaths_BindingsIni().c_str());
 
@@ -2150,6 +2940,7 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         return 0;
 
     case WM_KEYDOWN:
+    {
         if (wParam == VK_ESCAPE)
         {
             // cancel any drag or shrink
@@ -2160,10 +2951,13 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
                 KeyDel_Stop();
             return 0;
         }
-        return 0;
+        break;
+    }
 
-    case WM_LBUTTONDOWN:
+case WM_LBUTTONDOWN:
+
     {
+
         // Selection clear works only in Configuration tab
         if (g_activeSubTab == 1 && !g_kdrag.dragging && !g_kdrag.shrinking)
         {
@@ -2251,7 +3045,16 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         return FALSE;
     }
 
+    case WM_MOUSEWHEEL:
+    {
+        int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        if (delta > 0) g_wheelUpFlash = GetTickCount();
+        else           g_wheelDownFlash = GetTickCount();
+    }
+    break;
     case WM_DESTROY:
+        UnregisterHotKey(hWnd, 0xC08);
+
         KeyDrag_Stop();
         if (g_kdrag.hGhost)
         {
@@ -2280,6 +3083,7 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         SwapFly_FreeSurface();
 
         return 0;
+
     }
 
     return DefWindowProcW(hWnd, msg, wParam, lParam);

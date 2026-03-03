@@ -14,6 +14,14 @@ It reads per-key analog values via the Wooting Analog SDK and publishes XInput-c
 
 ---
 
+## 🆕 What's New in v3.0
+
+- ✅ **Live Mouse Layout** — interface refinement, More professional mouse interface/view, polished and graphically adjusted
+
+
+---
+
+
 ## 🆕 What's New in v2.2
 
 - ✅ **Mouse Button Actions** — macros can now send mouse clicks (Left, Right, Middle, X1, X2) as action steps, with a live capture button 🖱 directly in the action panel

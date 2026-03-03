@@ -1619,8 +1619,8 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 { VK_LBUTTON,  0, L"left"        },
                 { VK_RBUTTON,  1, L"right"       },
                 { VK_MBUTTON,  2, L"middle"      },
-                { VK_XBUTTON2, 3, L"X1 (thumb)"  }, // XBUTTON2 = upper thumb = X1 in our visual
-                { VK_XBUTTON1, 4, L"X2 (thumb2)" }, // XBUTTON1 = lower thumb = X2 in our visual
+                { VK_XBUTTON1, 3, L"X1" },  // XBUTTON1 = bit3 = X1
+                { VK_XBUTTON2, 4, L"X2" },  // XBUTTON2 = bit4 = X2
             };
 
             // Phase 1: grace period — extend as long as any button is still held.
