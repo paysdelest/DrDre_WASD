@@ -391,3 +391,9 @@ MIT — free to use, modify and redistribute. See [LICENSE](LICENSE).
 ---
 
 *DrDre_WASD v2.3 — Precision Input Automation for Hall-Effect Keyboards*
+
+---
+
+<p align="center">
+  ⭐ If this project helps you, consider starring the repository.
+</p>
