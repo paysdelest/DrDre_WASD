@@ -3,6 +3,10 @@
 </p>
 
 
+---
+
+
+
 ## Aperçu Interface
 
 ![Interface](assets/images/interface1.png)
@@ -10,6 +14,7 @@
 ![Interface](assets/images/interface3.png)
 ![Interface](assets/images/interface4.png)
 
+---
 
 
 > **Based on [HallJoy by PashOK7](https://github.com/PashOK7/HallJoy)** — significantly extended with a complete custom macro system, analog keyboard stability fixes, advanced gaming features, and a live mouse layout display.
