@@ -101,7 +101,8 @@ Create the folder if it does not exist. Without this step, the analog keyboard w
 
 > 💡 If you prefer to compile the DLL yourself, the source is at [universal-analog-plugin](https://github.com/calamity-inc/universal-analog-plugin). Apply the `unload()` fix described in the Technical Details section below.
 
-⚠️ **If you get a Get-WinEvent error mentioning:** `C:\Program Files\WootingAnalogPlugins\universal-analog-plugin\abiv1.dll`
+⚠️ **If you get a Get-WinEvent error mentioning:** 
+>`C:\Program Files\WootingAnalogPlugins\universal-analog-plugin\abiv1.dll`
 > Also copy the `.dll` to: `C:\Program Files\WootingAnalogPlugins\universal-analog-plugin\abiv1.dll`
 > Or create both paths: `C:\Program Files\WootingAnalogPlugins\abiv1.dll` **and** `C:\Program Files\WootingAnalogPlugins\universal-analog-plugin\abiv1.dll`
 
@@ -165,10 +166,6 @@ When **Mouse click** is selected as the action type, a **🖱 capture button** a
 Supported buttons: `left`, `right`, `middle`, `X1 (thumb)`, `X2 (thumb2)`
 
 You can also type the button name directly in the value field without using the capture button.
-
-
-| Key `6` | Tap `E` + Wait 100ms + Tap `E` | C4 plant / detonate pattern |
-
 
 
 
@@ -256,8 +253,8 @@ Perfect for verifying macro triggers visually.
 
 DrDre_WASD processes input through three distinct pipelines:
 
-- **Analog → Controller**
-- **Analog → Macro → Controller**
+- **Analog → Controller → Game**
+- **Analog → Macro → Controller → Game**
 - **Analog → Macro → Direct Game (Keyboard Injection)**
 
 ---
@@ -322,8 +319,7 @@ A fix has been submitted upstream to [universal-analog-plugin](https://github.co
 - **Macro does not trigger** — check whether the emergency stop was activated (`Ctrl+Shift+Alt+F12`), or verify the macro is enabled (green dot in the list)
 - **Macro enabled but not firing** — make sure the trigger combination is not captured by another application or system shortcut
 - **Controls do not resize correctly** — make sure you are using v2.0 or later; previous builds had a WM_SIZE layout bug when the tab was hidden
-- **Mouse action not firing** — verify the button name is spelled exactly: `left`, `right`, `middle`, `X1 (thumb)`, or `X2 (thumb2)`
-- **Mouse view not visible** — the silhouette floats in the top-right corner above the tab bar, with no border. It may be clipped on very small windows — try maximizing
+
 
 ### Enable Logging (for debugging)
 
