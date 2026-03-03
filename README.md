@@ -102,7 +102,7 @@ Create the folder if it does not exist. Without this step, the analog keyboard w
 > 💡 If you prefer to compile the DLL yourself, the source is at [universal-analog-plugin](https://github.com/calamity-inc/universal-analog-plugin). Apply the `unload()` fix described in the Technical Details section below.
 
 ⚠️ **If you get a Get-WinEvent error mentioning:** 
-**`C:\Program Files\WootingAnalogPlugins\universal-analog-plugin\abiv1.dll`**
+**>`C:\Program Files\WootingAnalogPlugins\universal-analog-plugin\abiv1.dll`**
 > Also copy the `.dll` to: `C:\Program Files\WootingAnalogPlugins\universal-analog-plugin\abiv1.dll`
 > Or create both paths: `C:\Program Files\WootingAnalogPlugins\abiv1.dll` **and** `C:\Program Files\WootingAnalogPlugins\universal-analog-plugin\abiv1.dll`
 
