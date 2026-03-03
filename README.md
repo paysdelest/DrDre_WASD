@@ -1,68 +1,61 @@
 <p align="center">
-  <img src="DrDre-WASD.png" width="400"/>
+  <img src="DrDre-WASD.png" width="420"/>
 </p>
 
+<h1 align="center">DrDre_WASD</h1>
+
+<p align="center">
+  <b>Precision Input Automation for Hall-Effect Keyboards</b><br>
+  Analog → Controller → Macro Engine — Built for serious gamers.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-Windows_10_|_11-blue">
+  <img src="https://img.shields.io/badge/Language-C%2B%2B-00599C">
+  <img src="https://img.shields.io/badge/x64-Release-important">
+  <img src="https://img.shields.io/badge/License-MIT-green">
+</p>
 
 ---
 
+## 🖼️ Interface Preview
 
+<p align="center">
+  <img src="assets/images/interface1.png" width="800"/>
+</p>
 
-## Aperçu Interface
+<p align="center">
+  <img src="assets/images/interface2.png" width="800"/>
+</p>
 
-![Interface](assets/images/interface1.png)
-![Interface](assets/images/interface2.png)
-![Interface](assets/images/interface3.png)
-![Interface](assets/images/interface4.png)
+<p align="center">
+  <img src="assets/images/interface3.png" width="800"/>
+</p>
+
+<p align="center">
+  <img src="assets/images/interface4.png" width="800"/>
+</p>
 
 ---
 
+## 🚀 What is DrDre_WASD?
 
-> **Based on [HallJoy by PashOK7](https://github.com/PashOK7/HallJoy)** — significantly extended with a complete custom macro system, analog keyboard stability fixes, advanced gaming features, and a live mouse layout display.
+> Based on HallJoy — heavily extended with a modern macro engine, advanced stability fixes, live mouse visualization, and competitive gaming tools.
 
-DrDre_WASD is a Windows application that turns a **Hall-effect analog keyboard** into one or more virtual Xbox 360 controllers — with an advanced custom macro system on top.
+DrDre_WASD turns a **Hall-effect analog keyboard** into:
 
-It reads per-key analog values via the Wooting Analog SDK and publishes XInput-compatible controllers via ViGEmBus.
+- 🎮 Up to 4 virtual Xbox 360 controllers  
+- 🧠 A fully programmable macro engine  
+- 🖱️ A real-time mouse layout visualizer  
+- ⚡ A low-latency competitive input system  
+
+It reads analog values via the Wooting Analog SDK and outputs XInput controllers using ViGEmBus.
+
+---
 
 📺 **Original HallJoy presentation video**: [YouTube](https://youtu.be/MI_ZTS6UFhM?si=Cpn9DY95S9no9ncJ)
 
 ---
-
-## 🆕 What's New in v3.0
-
-- ✅ **Live Mouse Layout** — interface refinement, More professional mouse interface/view, polished and graphically adjusted
-
-
----
-
-
-## 🆕 What's New in v2.2
-
-- ✅ **Mouse Button Actions** — macros can now send mouse clicks (Left, Right, Middle, X1, X2) as action steps, with a live capture button 🖱 directly in the action panel
-- ✅ **Live Mouse Layout** — a floating top-view mouse silhouette is permanently displayed in the top-right corner of the interface, above the tabs, showing real-time button press state (L, R, M, X1, X2) — mirrors the keyboard layout display
-- ✅ **Scrollable Custom Macro tab** — the right column now fully scrolls with mouse wheel and a draggable scrollbar, so all controls remain accessible even on small screens
-- ✅ **Action type dropdown fixed** — the action type combobox now properly opens as a full 6-item dropdown on click, without requiring mouse wheel scrolling to change the selection
-- ✅ **Custom Macros tab** — free-trigger macro system with keyboard/mouse triggers, N-times repeat, cancel-on-release, drag & drop reorder
-- ✅ **comfort**  action deletion directly via the interface using a [X] button
-- ✅ **Trigger preview** — display the trigger as small gray text below each macro in the list without having to select it
-
-
----
-
-## 🆕 What's New in v2.0
-
-- ✅ **Custom Macro Tab** — free-trigger macro editor replacing the old Combo/Macro tab, fully redesigned with a premium dark UI
-- ✅ **Enable / Disable Macros** — toggle any macro via the UI checkbox or right-click on the list, without deleting it
-- ✅ **Mouse Combo Triggers** — right-click held + left click, middle-click combos, scroll wheel combos, double-clicks, simultaneous clicks
-- ✅ **Emergency Stop** — `Ctrl+Shift+Alt+F12` instantly halts all running macros
-- ✅ **abiv1.dll deadlock fix** — resolved a crash after ~4 hours of runtime caused by a mutex deadlock in `unload()` inside the universal-analog-plugin
-- ✅ **Thread-safe analog backend** — Wooting analog reads protected by mutex, atomic state management
-- ✅ **Improved shutdown sequence** — proper hook cleanup on exit to prevent crashes
-- ✅ **PreBuildEvent** — automatically copies Wooting SDK DLLs from `runtime\` to the output directory at build time
-
----
-
-
-
 
 
 ## ✨ Main Features
@@ -127,19 +120,6 @@ Create the folder if it does not exist. Without this step, the analog keyboard w
 
 > If dependencies are missing, the application may offer to download/install them automatically.
 
----
-
-## 🖱️ Live Mouse Layout
-
-A **floating mouse silhouette** is permanently displayed in the **top-right corner** of the main window, above the tab bar — always visible regardless of which tab is active, just like the keyboard layout.
-
-- Drawn as a **top-view mouse shape** using smooth Bézier curves — no placeholder icons
-- **L** (left button), **R** (right button), **M** (wheel click), **X1** and **X2** (thumb side buttons) are individually displayed
-- Each button **lights up in blue** when physically pressed, returns to dark when released
-- Refreshes at **60 fps** — zero perceptible lag on the display
-- No border, no label, no card — the silhouette floats directly on the background, exactly like the keyboard layout
-
-This makes it easy to visually confirm which mouse button a trigger or action is mapped to, and to verify live captures in real time.
 
 ---
 
@@ -162,36 +142,21 @@ The **Custom Macro** tab lets you bind complex action sequences to any **mouse b
 
 The left list shows a **green dot** (active) or **grey dot** (inactive) next to each macro for a quick overview.
 
-### Available Trigger Types
 
-#### Mouse triggers
-| Trigger | Description |
-|---------|-------------|
-| Right-click held + Left click | ADS + fire (most common gaming combo) |
-| Left-click held + Right click | Alternate ADS combo |
-| Middle-click held + Left click | Custom utility |
-| Middle-click held + Right click | Custom utility |
-| Double left-click | Fast double-tap action |
-| Double right-click | Fast double-tap action |
-| Left + right click simultaneously | Two-button safety combo |
-| Scroll up + right-click held | Scope cycle while aiming |
-| Scroll down + right-click held | Cancel reload / weapon swap |
+# 🔥 The Custom Macro Engine (The Real Power)
 
-#### Keyboard triggers
-Any single key or modifier + key combination captured via the **Capture trigger** button.
+This is where DrDre_WASD becomes different.
 
-### Action Types
+You can bind **complex action sequences** to:
 
-Each macro is a sequence of steps — mix and match freely:
+- Mouse button combinations  
+- Keyboard triggers  
+- Double-clicks  
+- Scroll wheel combos  
+- Held-button combos (e.g. Right-click held + Left click)  
+- Simultaneous multi-button triggers  
 
-| Action | Icon | Description |
-|--------|------|-------------|
-| Press key | 🔵 | Holds a key down until a Release action |
-| Release key | ⚫ | Releases a previously held key |
-| Tap key | 🟢 | Instant press + release |
-| Type text | 🟡 | Types a full string of characters |
-| Mouse click | 🟣 | Left, Right, Middle, X1 or X2 click |
-| Wait (ms) | ⬜ | Pause between actions |
+No dedicated macro keys required.
 
 #### 🖱️ Mouse Click Actions — Live Capture
 
@@ -200,6 +165,12 @@ When **Mouse click** is selected as the action type, a **🖱 capture button** a
 Supported buttons: `left`, `right`, `middle`, `X1 (thumb)`, `X2 (thumb2)`
 
 You can also type the button name directly in the value field without using the capture button.
+
+
+| Key `6` | Tap `E` + Wait 100ms + Tap `E` | C4 plant / detonate pattern |
+
+
+
 
 ### Options
 
@@ -216,53 +187,28 @@ You can also type the button name directly in the value field without using the 
 
 ---
 
-## 🎮 Gaming Use Cases
+## 🎮 Example Gaming Macros
 
-### 🎯 FPS (Valorant, CS2, Apex, Warzone...)
+### 🎯 FPS (Valorant, CS2, Apex…)
 
-The most powerful use: bind complex mechanics to your **existing mouse buttons** — no extra keys needed.
-
-| Trigger | Action Sequence | Result |
-|---------|----------------|--------|
-| Right-click held + Left click | Tap `P` | Ping an enemy while staying in ADS |
-| Double left-click | Hold `Shift` + Tap `W` + Release `Shift` | Instant sprint burst |
-| Left click + melee key | Tap `G` | Instant hostage take |
-| Key `5` | Tap `C` + Wait 100ms + Tap `V` | Slide then prone in one motion |
-| Middle + Left click | Tap `E` | Interact / loot while shooting |
+| Trigger | Action | Result |
+|----------|--------|--------|
+| Right-click held + Left click | Tap `P` | Ping enemy while staying in ADS |
+| Middle + Left click | Tap `E` | Interact while shooting |
+| Scroll up + right-click held | Tap `F2` | Instant wall switch while aiming |
 | Key `6` | Tap `E` + Wait 100ms + Tap `E` | C4 plant / detonate pattern |
 
-### 🏗️ Building Games (Fortnite, Minecraft, Valheim...)
+---
 
-Bind build/edit/material cycles to mouse combos and free your fingers from the keyboard.
+### ⚔️ MMO / ARPG
 
-| Trigger | Action Sequence | Result |
-|---------|----------------|--------|
-| Right-click held + Left click | Tap `F1` + Wait 50ms + Tap `F1` | Instant build confirm |
-| Triple left-click | Tap `Q` + Wait 30ms + Tap `E` + Wait 30ms + Tap `R` | Fast material cycle |
-| Middle + Left click | Tap `Z` + Wait 200ms + Tap `Z` | Build → edit → build loop |
-| Scroll up + right-click held | Tap `F2` | Switch to wall instantly while aiming |
+| Trigger | Action | Result |
+|----------|--------|--------|
+| Right-click held + Left click | `1 → wait 100ms → 2 → wait 100ms → 3` | Skill rotation combo |
+| Scroll up + right-click held | Tap `4 → wait 50ms → 5` | Burst combo |
+| Double right-click | Tap `F → wait 500ms → Tap F` | Charge / detonate |
 
-### ⚔️ MMO / ARPG (WoW, FFXIV, Path of Exile, Diablo...)
-
-Chain skill rotations to a single trigger. No more fumbling on the keyboard mid-fight.
-
-| Trigger | Action Sequence | Result |
-|---------|----------------|--------|
-| Right-click held + Left click | Tap `1` + Wait 100ms + Tap `2` + Wait 100ms + Tap `3` | 3-skill combo while targeting |
-| Scroll up + right-click held | Tap `4` + Wait 50ms + Tap `5` | Burst combo from scroll |
-| Double right-click | Tap `F` + Wait 500ms + Tap `F` | Charge / detonate pattern |
-| Middle + Right click | Tap `6` + Wait 200ms + Tap `7` + Wait 200ms + Tap `8` | Defensive cooldown chain |
-
-### 🗺️ Adventure / Open World (Elden Ring, Zelda, RDR2, GTA...)
-
-Automate sequences that normally require frame-perfect timing.
-
-| Trigger | Action Sequence | Result |
-|---------|----------------|--------|
-| Double left-click | Tap `X` + Wait 80ms + Tap `X` | Double dodge / roll |
-| Right-click held + Left click | Tap `C` + Wait 100ms + Tap `V` | Block then parry |
-| Scroll down + right-click held | Tap `H` + Wait 300ms + Tap `H` | Call horse + gallop |
-| Middle + Left click | Hold `Shift` + Tap `F` + Release `Shift` | Power attack |
+---
 
 ### 💬 Text Macros — Type Lines / Code at Speed
 
@@ -292,6 +238,19 @@ The **Type text** action turns any macro into a **text expander**. Fire a full s
 
 ---
 
+
+## 🖱️ Live Mouse Layout
+
+A floating top-view mouse silhouette:
+
+- 60 FPS refresh
+- L / R / M / X1 / X2 highlight in real-time
+- Always visible in top-right
+- No placeholder icons — custom drawn shape
+
+Perfect for verifying macro triggers visually.
+
+---
 
 ## 🏗️ DrDre_WASD Input Architecture
 
