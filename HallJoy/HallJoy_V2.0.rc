@@ -27,9 +27,10 @@ LANGUAGE 9, 1
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
 
-IDI_HALLJOY              ICON         "HallJoy_V2.0.ico"
-IDI_SMALL                ICON         "small.ico"
+IDI_HALLJOY              ICON         "DrDre-WASD.ico"
+IDI_SMALL                ICON         "DrDre-WASD.ico"
 IDR_WOOTING_WRAPPER      RCDATA       "..\\runtime\\wooting_analog_wrapper.dll"
+IDR_MOUSE_PNG            RCDATA       "..\\assets\\mouse_transparent_defringed.png"
 
 /////////////////////////////////////////////////////////////////////////////
 //

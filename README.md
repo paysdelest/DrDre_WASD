@@ -1,4 +1,6 @@
- # DrDre_WASD v2.1
+<p align="center">
+  <img src="DrDre_WASD.png" width="400"/>
+</p>
 
 > **Based on [HallJoy by PashOK7](https://github.com/PashOK7/HallJoy)** — significantly extended with a complete custom macro system, analog keyboard stability fixes, advanced gaming features, and a live mouse layout display.
 
