@@ -90,7 +90,8 @@ This means it works with many HE keyboards supported by this stack — not just 
 
 The repository includes prebuilt `abiv0.dll` and `abiv1.dll` from the universal-analog-plugin, **with the deadlock fix applied** (stable 24h+ runtime).
 
-⚠️ **You MUST place the DLL files in this exact folder:** `C:\Program Files\WootingAnalogPlugins\`
+⚠️ **You MUST place the DLL files in this exact folder:** 
+- `C:\Program Files\WootingAnalogPlugins\`
 
 Create the folder if it does not exist. Without this step, the analog keyboard will not be detected.
 
