@@ -40,10 +40,11 @@ static bool ReadLine(FILE* f, std::wstring& out)
 // QueueItem must be fully defined before the anonymous namespace (std::queue<QueueItem> needs complete type)
 struct QueueItem {
     std::vector<ComboAction> actions;
-    uint32_t repeatCount     = 0;
-    uint32_t repeatDelayMs  = 0;
+    uint32_t repeatCount = 0;
+    uint32_t repeatDelayMs = 0;
     bool     cancelOnRelease = false;
-    FreeTrigger trigger;
+    FreeTrigger  trigger;
+    std::wstring comboName;   // pour logs watchdog
 };
 
 // --- VARIABLES INTERNES ---
@@ -57,13 +58,13 @@ namespace {
     std::atomic<bool> g_altHeld = false;
     std::atomic<bool> g_winHeld = false;
 
-    
+
     // Physical key held state (independent of lParam repeat bit; avoids key auto-repeat bursts)
     // 256 VKs -> 4x64-bit bitset
-    std::atomic<unsigned long long> g_keyHeldBits0{0};
-    std::atomic<unsigned long long> g_keyHeldBits1{0};
-    std::atomic<unsigned long long> g_keyHeldBits2{0};
-    std::atomic<unsigned long long> g_keyHeldBits3{0};
+    std::atomic<unsigned long long> g_keyHeldBits0{ 0 };
+    std::atomic<unsigned long long> g_keyHeldBits1{ 0 };
+    std::atomic<unsigned long long> g_keyHeldBits2{ 0 };
+    std::atomic<unsigned long long> g_keyHeldBits3{ 0 };
 
     static inline bool FC_IsKeyHeld(WORD vk) {
         unsigned idx = (unsigned)vk;
@@ -90,7 +91,7 @@ namespace {
                 if (bits.compare_exchange_weak(cur, next, std::memory_order_relaxed, std::memory_order_relaxed))
                     break;
             }
-        };
+            };
         switch (bucket) {
         case 0: setBits(g_keyHeldBits0); break;
         case 1: setBits(g_keyHeldBits1); break;
@@ -98,7 +99,7 @@ namespace {
         default:setBits(g_keyHeldBits3); break;
         }
     }
-// Mouse state
+    // Mouse state
     std::atomic<bool> g_leftHeld = false;
     std::atomic<bool> g_rightHeld = false;
     std::atomic<bool> g_middleHeld = false;
@@ -116,6 +117,21 @@ namespace {
     std::queue<QueueItem> g_queue;
     std::mutex              g_queueMutex;
     std::condition_variable g_queueCv;
+
+    // ── Watchdog ─────────────────────────────────────────────────────────────
+    static constexpr DWORD    kWD_MaxRuntimeMs = 10000;
+    static constexpr uint32_t kWD_MaxActions = 500;
+    static constexpr uint32_t kWD_MaxTrigsPerSec = 50;
+    std::atomic<DWORD>    g_wdStartTick{ 0 };
+    std::atomic<uint32_t> g_wdActionCount{ 0 };
+    std::atomic<DWORD>    g_wdRateTick{ 0 };
+    std::atomic<uint32_t> g_wdRateCount{ 0 };
+    std::wstring          g_wdCurrentComboName;
+
+    // ── Whitelist ────────────────────────────────────────────────────────────
+    std::atomic<int>          g_wlMode{ 0 };  // 0=Off 1=Whitelist 2=FocusOnly
+    std::vector<std::wstring> g_whitelist;
+    std::mutex                g_wlMutex;
 
     // Trigger CAPTURE
     std::atomic<bool>   g_capturing = false;
@@ -305,9 +321,62 @@ static bool HandleCAPTUREInput(FreeTriggerKeyType keyType, WORD vkCode)
 }
 
 // --- WORKER THREAD ---
+static bool InjectionAllowed()
+{
+    int mode = g_wlMode.load(std::memory_order_relaxed);
+    if (mode == 0) return true;
+    HWND fgWnd = GetForegroundWindow();
+    if (!fgWnd) return false;
+    DWORD pid = 0; GetWindowThreadProcessId(fgWnd, &pid);
+    if (!pid) return false;
+    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!hProc) return false;
+    wchar_t exeFull[MAX_PATH] = {}; DWORD sz = MAX_PATH;
+    QueryFullProcessImageNameW(hProc, 0, exeFull, &sz);
+    CloseHandle(hProc);
+    wchar_t* slash = wcsrchr(exeFull, L'\\');
+    const wchar_t* exeName = slash ? slash + 1 : exeFull;
+    std::lock_guard<std::mutex> lk(g_wlMutex);
+    for (const auto& w : g_whitelist)
+        if (_wcsicmp(exeName, w.c_str()) == 0) return true;
+    OutputDebugStringW((std::wstring(L"[WHITELIST] Injection bloquée — ") + exeName + L"\n").c_str());
+    return false;
+}
+
 static bool ExecAction(const ComboAction& action)
 {
     if (g_cancelCurrent.load(std::memory_order_relaxed)) return false;
+
+    // Watchdog : timeout
+    DWORD now = GetTickCount();
+    DWORD wdStart = g_wdStartTick.load(std::memory_order_relaxed);
+    if (wdStart != 0 && (now - wdStart) > kWD_MaxRuntimeMs) {
+        wchar_t buf[256];
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+            L"[WATCHDOG] Macro stopped — reason: timeout — macro: %s — runtime: %.1fs\n",
+            g_wdCurrentComboName.c_str(), (float)(now - wdStart) / 1000.0f);
+        OutputDebugStringW(buf);
+        return false;
+    }
+    // Watchdog : max actions
+    uint32_t ac = g_wdActionCount.fetch_add(1, std::memory_order_relaxed);
+    if (ac >= kWD_MaxActions) {
+        wchar_t buf[256];
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+            L"[WATCHDOG] Macro stopped — reason: max actions (%u) — macro: %s\n",
+            kWD_MaxActions, g_wdCurrentComboName.c_str());
+        OutputDebugStringW(buf);
+        return false;
+    }
+    // Whitelist : bloquer injection si app non autorisée (clavier + souris + texte)
+    if (action.type == ComboActionType::PressKey ||
+        action.type == ComboActionType::ReleaseKey ||
+        action.type == ComboActionType::TapKey ||
+        action.type == ComboActionType::MouseClick ||
+        action.type == ComboActionType::TypeText)
+    {
+        if (!InjectionAllowed()) return true;  // action ignorée, macro continue
+    }
     if (action.type == ComboActionType::Delay) {
         DWORD end = GetTickCount() + action.delayMs;
         while (GetTickCount() < end) {
@@ -323,42 +392,48 @@ static bool ExecAction(const ComboAction& action)
         WORD vk = HidToVk(action.keyHid);
         const bool vigemRoute = Bindings_IsHidBound(action.keyHid);
         auto MakeKeyInput = [&](WORD wVk, DWORD flags) -> INPUT {
-            INPUT i{}; i.type=INPUT_KEYBOARD; i.ki.wVk=wVk;
-            i.ki.wScan=(WORD)MapVirtualKeyW(wVk,MAPVK_VK_TO_VSC);
-            i.ki.dwFlags=flags|KEYEVENTF_SCANCODE;
-            i.ki.dwExtraInfo=(ULONG_PTR)0x484A4D43ULL; return i;
-        };
+            INPUT i{}; i.type = INPUT_KEYBOARD; i.ki.wVk = wVk;
+            i.ki.wScan = (WORD)MapVirtualKeyW(wVk, MAPVK_VK_TO_VSC);
+            i.ki.dwFlags = flags | KEYEVENTF_SCANCODE;
+            i.ki.dwExtraInfo = (ULONG_PTR)0x484A4D43ULL; return i;
+            };
         if (action.type == ComboActionType::PressKey) {
-            if (vigemRoute) { BackendUI_SetAnalogMilli(action.keyHid,1000); Backend_SetMacroAnalog(action.keyHid,1000.0f); }
-            INPUT i=MakeKeyInput(vk,0); SendInput(1,&i,sizeof(INPUT));
-        } else if (action.type == ComboActionType::ReleaseKey) {
-            INPUT i=MakeKeyInput(vk,KEYEVENTF_KEYUP); SendInput(1,&i,sizeof(INPUT));
-            if (vigemRoute) { BackendUI_SetAnalogMilli(action.keyHid,0); Backend_ClearMacroAnalog(action.keyHid); }
-        } else {
-            if (vigemRoute) Backend_SetMacroAnalogForMs(action.keyHid,1.0f,120);
-            INPUT iD=MakeKeyInput(vk,0), iU=MakeKeyInput(vk,KEYEVENTF_KEYUP);
-            SendInput(1,&iD,sizeof(INPUT)); Sleep(30); SendInput(1,&iU,sizeof(INPUT));
+            if (vigemRoute) { BackendUI_SetAnalogMilli(action.keyHid, 1000); Backend_SetMacroAnalog(action.keyHid, 1000.0f); }
+            INPUT i = MakeKeyInput(vk, 0); SendInput(1, &i, sizeof(INPUT));
         }
-    } else if (action.type == ComboActionType::MouseClick) {
-        INPUT inp[2]={}; DWORD dF=0,uF=0,xb=0; BYTE vb=0;
-        switch(action.mouseButton){
-        case 0:dF=MOUSEEVENTF_LEFTDOWN;  uF=MOUSEEVENTF_LEFTUP;  vb=(1<<0);break;
-        case 1:dF=MOUSEEVENTF_RIGHTDOWN; uF=MOUSEEVENTF_RIGHTUP; vb=(1<<1);break;
-        case 2:dF=MOUSEEVENTF_MIDDLEDOWN;uF=MOUSEEVENTF_MIDDLEUP;vb=(1<<2);break;
-        case 3:dF=MOUSEEVENTF_XDOWN;uF=MOUSEEVENTF_XUP;xb=XBUTTON1;vb=(1<<3);break;
-        case 4:dF=MOUSEEVENTF_XDOWN;uF=MOUSEEVENTF_XUP;xb=XBUTTON2;vb=(1<<4);break;
+        else if (action.type == ComboActionType::ReleaseKey) {
+            INPUT i = MakeKeyInput(vk, KEYEVENTF_KEYUP); SendInput(1, &i, sizeof(INPUT));
+            if (vigemRoute) { BackendUI_SetAnalogMilli(action.keyHid, 0); Backend_ClearMacroAnalog(action.keyHid); }
         }
-        if(dF){inp[0].type=INPUT_MOUSE;inp[0].mi.dwFlags=dF;inp[0].mi.mouseData=xb;
-               inp[1].type=INPUT_MOUSE;inp[1].mi.dwFlags=uF;inp[1].mi.mouseData=xb;
-               g_injectedMouseState.fetch_or(vb,std::memory_order_relaxed);
-               SendInput(2,inp,sizeof(INPUT)); Sleep(30);
-               g_injectedMouseState.fetch_and((BYTE)~vb,std::memory_order_relaxed);}
-    } else if (action.type == ComboActionType::TypeText) {
+        else {
+            if (vigemRoute) Backend_SetMacroAnalogForMs(action.keyHid, 1.0f, 120);
+            INPUT iD = MakeKeyInput(vk, 0), iU = MakeKeyInput(vk, KEYEVENTF_KEYUP);
+            SendInput(1, &iD, sizeof(INPUT)); Sleep(30); SendInput(1, &iU, sizeof(INPUT));
+        }
+    }
+    else if (action.type == ComboActionType::MouseClick) {
+        INPUT inp[2] = {}; DWORD dF = 0, uF = 0, xb = 0; BYTE vb = 0;
+        switch (action.mouseButton) {
+        case 0:dF = MOUSEEVENTF_LEFTDOWN;  uF = MOUSEEVENTF_LEFTUP;  vb = (1 << 0); break;
+        case 1:dF = MOUSEEVENTF_RIGHTDOWN; uF = MOUSEEVENTF_RIGHTUP; vb = (1 << 1); break;
+        case 2:dF = MOUSEEVENTF_MIDDLEDOWN; uF = MOUSEEVENTF_MIDDLEUP; vb = (1 << 2); break;
+        case 3:dF = MOUSEEVENTF_XDOWN; uF = MOUSEEVENTF_XUP; xb = XBUTTON1; vb = (1 << 3); break;
+        case 4:dF = MOUSEEVENTF_XDOWN; uF = MOUSEEVENTF_XUP; xb = XBUTTON2; vb = (1 << 4); break;
+        }
+        if (dF) {
+            inp[0].type = INPUT_MOUSE; inp[0].mi.dwFlags = dF; inp[0].mi.mouseData = xb;
+            inp[1].type = INPUT_MOUSE; inp[1].mi.dwFlags = uF; inp[1].mi.mouseData = xb;
+            g_injectedMouseState.fetch_or(vb, std::memory_order_relaxed);
+            SendInput(2, inp, sizeof(INPUT)); Sleep(30);
+            g_injectedMouseState.fetch_and((BYTE)~vb, std::memory_order_relaxed);
+        }
+    }
+    else if (action.type == ComboActionType::TypeText) {
         for (wchar_t ch : action.text) {
             if (g_cancelCurrent.load(std::memory_order_relaxed)) return false;
-            INPUT inp[2]={}; inp[0].type=INPUT_KEYBOARD; inp[0].ki.wScan=ch;
-            inp[0].ki.dwFlags=KEYEVENTF_UNICODE; inp[1]=inp[0]; inp[1].ki.dwFlags|=KEYEVENTF_KEYUP;
-            SendInput(2,inp,sizeof(INPUT)); Sleep(10);
+            INPUT inp[2] = {}; inp[0].type = INPUT_KEYBOARD; inp[0].ki.wScan = ch;
+            inp[0].ki.dwFlags = KEYEVENTF_UNICODE; inp[1] = inp[0]; inp[1].ki.dwFlags |= KEYEVENTF_KEYUP;
+            SendInput(2, inp, sizeof(INPUT)); Sleep(10);
         }
     }
     if (action.type != ComboActionType::Delay) Sleep(10);
@@ -388,6 +463,12 @@ static void WorkerFunc()
             if (!g_queue.empty()) { item = g_queue.front(); g_queue.pop(); }
         }
         if (item.actions.empty()) continue;
+
+        // Watchdog : reset pour ce run
+        g_wdStartTick.store(GetTickCount(), std::memory_order_relaxed);
+        g_wdActionCount.store(0, std::memory_order_relaxed);
+        g_wdCurrentComboName = item.comboName;
+
         g_cancelCurrent.store(false, std::memory_order_relaxed);
         uint32_t runs = (item.repeatCount == 0) ? 1 : item.repeatCount;
         for (uint32_t r = 0; r < runs; ++r) {
@@ -399,7 +480,9 @@ static void WorkerFunc()
                 if (!SleepCancelableMs(item.repeatDelayMs)) goto done;
             }
         }
-        done:;
+    done:
+        g_wdStartTick.store(0, std::memory_order_relaxed);
+        g_wdCurrentComboName.clear();
     }
 }
 
@@ -428,11 +511,12 @@ static bool TriggerExtraConditionsMatch(const FreeTrigger& trigger)
 static void FireCombo(FreeCombo& combo)
 {
     QueueItem item;
-    item.actions         = combo.actions;
-    item.repeatCount     = combo.repeatCount;
-    item.repeatDelayMs  = combo.repeatDelayMs;
+    item.actions = combo.actions;
+    item.repeatCount = combo.repeatCount;
+    item.repeatDelayMs = combo.repeatDelayMs;
     item.cancelOnRelease = combo.cancelOnRelease;
-    item.trigger         = combo.trigger;
+    item.trigger = combo.trigger;
+    item.comboName = combo.name;  // pour logs watchdog
     {
         std::lock_guard<std::mutex> qLock(g_queueMutex);
         g_queue.push(std::move(item));
@@ -745,7 +829,7 @@ namespace FreeComboSystem
         bool isDown = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
         bool isUp = (msg == WM_KEYUP || msg == WM_SYSKEYUP);
 
-        
+
         // Track physical held state to suppress OS auto-repeat bursts (works even if lParam repeat bit is unreliable)
         if (isDown) {
             if (FC_IsKeyHeld(vk)) {
@@ -757,7 +841,7 @@ namespace FreeComboSystem
         else if (isUp) {
             FC_SetKeyHeld(vk, false);
         }
-// Update modifiers
+        // Update modifiers
         if (vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL)
             g_ctrlHeld = isDown;
         else if (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT)
@@ -811,7 +895,29 @@ namespace FreeComboSystem
             if (combo.cancelOnRelease && !held)
                 g_cancelCurrent.store(true, std::memory_order_relaxed);
             if (held && (now - combo.lastExecTime >= combo.repeatDelayMs)) {
-                FireCombo(combo);
+                // Watchdog rate limiter — max kWD_MaxTrigsPerSec/s
+                DWORD rt = g_wdRateTick.load(std::memory_order_relaxed);
+                if (now - rt >= 1000) {
+                    g_wdRateTick.store(now, std::memory_order_relaxed);
+                    g_wdRateCount.store(0, std::memory_order_relaxed);
+                }
+                uint32_t cnt = g_wdRateCount.fetch_add(1, std::memory_order_relaxed);
+                if (cnt < kWD_MaxTrigsPerSec) {
+                    FireCombo(combo);
+                }
+                else {
+                    // Hard stop : vider la queue + annuler le run en cours
+                    {
+                        std::lock_guard<std::mutex> qLock(g_queueMutex);
+                        while (!g_queue.empty()) g_queue.pop();
+                    }
+                    g_cancelCurrent.store(true, std::memory_order_relaxed);
+                    wchar_t buf[256];
+                    _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+                        L"[WATCHDOG] Hard stop — reason: rate limit (>%u/s) — macro: %s\n",
+                        kWD_MaxTrigsPerSec, combo.name.c_str());
+                    OutputDebugStringW(buf);
+                }
             }
         }
     }
@@ -842,13 +948,74 @@ namespace FreeComboSystem
     }
 
     // --- SAVE ---
+    // ── EmergencyStop ────────────────────────────────────────────────────────
+    // Arrêt immédiat : vide la queue + cancelle le run en cours.
+    // Appelle avec une raison pour le log, ex: L"user-hotkey"
+    void EmergencyStop(const wchar_t* reason)
+    {
+        // 1. Vider la queue
+        {
+            std::lock_guard<std::mutex> qLock(g_queueMutex);
+            while (!g_queue.empty()) g_queue.pop();
+        }
+        // 2. Annuler le run en cours
+        g_cancelCurrent.store(true, std::memory_order_relaxed);
+
+        wchar_t buf[256];
+        _snwprintf_s(buf, _countof(buf), _TRUNCATE,
+            L"[EMERGENCY STOP] reason: %s\n", reason);
+        OutputDebugStringW(buf);
+    }
+
+    // ── Whitelist API ────────────────────────────────────────────────────────
+    void SetWhitelistMode(int mode)  // 0=Off  1=Whitelist  2=FocusOnly
+    {
+        g_wlMode.store(mode, std::memory_order_relaxed);
+    }
+    int GetWhitelistMode()
+    {
+        return g_wlMode.load(std::memory_order_relaxed);
+    }
+    void SetWhitelist(const std::vector<std::wstring>& apps)
+    {
+        std::lock_guard<std::mutex> lk(g_wlMutex);
+        g_whitelist = apps;
+    }
+    std::vector<std::wstring> GetWhitelist()
+    {
+        std::lock_guard<std::mutex> lk(g_wlMutex);
+        return g_whitelist;
+    }
+    void AddToWhitelist(const std::wstring& exeName)
+    {
+        std::lock_guard<std::mutex> lk(g_wlMutex);
+        for (const auto& w : g_whitelist)
+            if (_wcsicmp(w.c_str(), exeName.c_str()) == 0) return;
+        g_whitelist.push_back(exeName);
+    }
+    void RemoveFromWhitelist(const std::wstring& exeName)
+    {
+        std::lock_guard<std::mutex> lk(g_wlMutex);
+        g_whitelist.erase(std::remove_if(g_whitelist.begin(), g_whitelist.end(),
+            [&](const std::wstring& w) { return _wcsicmp(w.c_str(), exeName.c_str()) == 0; }),
+            g_whitelist.end());
+    }
+
     bool SaveToFile(const wchar_t* path)
     {
         std::lock_guard<std::mutex> lock(g_comboMutex);
         FILE* f = nullptr;
         if (_wfopen_s(&f, path, L"w") != 0 || !f) return false;
 
-        fwprintf(f, L"DRDRE_FREECOMBOS_V4\n");
+        fwprintf(f, L"DRDRE_FREECOMBOS_V5\n");
+        // Whitelist config
+        fwprintf(f, L"WL_MODE %d\n", g_wlMode.load(std::memory_order_relaxed));
+        {
+            std::lock_guard<std::mutex> wlLk(g_wlMutex);
+            fwprintf(f, L"WL_COUNT %u\n", (unsigned)g_whitelist.size());
+            for (const auto& w : g_whitelist)
+                fwprintf(f, L"WL_ENTRY %s\n", w.c_str());
+        }
         fwprintf(f, L"%u\n", (unsigned)g_combos.size());
 
         for (const auto& combo : g_combos) {
@@ -891,14 +1058,36 @@ namespace FreeComboSystem
 
         std::wstring line;
         if (!ReadLine(f, line)) { fclose(f); return false; }
-        bool isV3 = false;
-        bool isV2 = false;
-        bool isV4 = false;
-        if (line == L"DRDRE_FREECOMBOS_V4") { isV4 = true; isV3 = true; }
+        bool isV5 = false, isV4 = false, isV3 = false, isV2 = false;
+        if (line == L"DRDRE_FREECOMBOS_V5") { isV5 = true; isV4 = true; isV3 = true; }
+        else if (line == L"DRDRE_FREECOMBOS_V4") { isV4 = true; isV3 = true; }
         else if (line == L"DRDRE_FREECOMBOS_V3") isV3 = true;
         else if (line == L"DRDRE_FREECOMBOS_V2") isV2 = true;
         else if (line == L"DRDRE_FREECOMBOS_V1") {}
         else { fclose(f); return false; }
+
+        // V5 : lire la config whitelist avant les combos
+        if (isV5) {
+            std::wstring wlLine;
+            if (ReadLine(f, wlLine)) {
+                int wlm = 0;
+                if (swscanf_s(wlLine.c_str(), L"WL_MODE %d", &wlm) == 1)
+                    g_wlMode.store(wlm, std::memory_order_relaxed);
+            }
+            if (ReadLine(f, wlLine)) {
+                unsigned wlCount = 0;
+                if (swscanf_s(wlLine.c_str(), L"WL_COUNT %u", &wlCount) == 1) {
+                    std::lock_guard<std::mutex> wlLk(g_wlMutex);
+                    g_whitelist.clear();
+                    for (unsigned wi = 0; wi < wlCount; ++wi) {
+                        std::wstring entry;
+                        if (!ReadLine(f, entry)) break;
+                        if (entry.size() > 9 && entry.substr(0, 9) == L"WL_ENTRY ")
+                            g_whitelist.push_back(entry.substr(9));
+                    }
+                }
+            }
+        }
 
         unsigned countU = 0;
         if (!ReadLine(f, line) || swscanf_s(line.c_str(), L"%u", &countU) != 1) { fclose(f); return false; }
@@ -933,8 +1122,8 @@ namespace FreeComboSystem
 
             int en = 0, rep = 0, del = 0, isEx = 0; unsigned rcount = 0; int crel = 0;
             if (!ReadLine(f, line)) { parseOk = false; break; }
-            if (isV4) swscanf_s(line.c_str(), L"%d %d %d %d %u %d", &en,&rep,&del,&isEx,&rcount,&crel);
-            else      swscanf_s(line.c_str(), L"%d %d %d %d", &en,&rep,&del,&isEx);
+            if (isV4) swscanf_s(line.c_str(), L"%d %d %d %d %u %d", &en, &rep, &del, &isEx, &rcount, &crel);
+            else      swscanf_s(line.c_str(), L"%d %d %d %d", &en, &rep, &del, &isEx);
             combo.enabled = (en != 0);
             combo.repeatWhileHeld = (rep != 0);
             combo.repeatDelayMs = del;

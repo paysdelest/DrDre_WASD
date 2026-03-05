@@ -117,6 +117,20 @@ namespace FreeComboSystem
     // Tick for repeats
     void Tick();
 
+    // ── Whitelist d'applications ─────────────────────────────────────────────
+    // Empêche l'injection clavier/souris dans les apps non autorisées.
+    // mode: 0=Off (désactivé), 1=Whitelist (injecter seulement dans les apps listées)
+    // ── Arrêt d'urgence ──────────────────────────────────────────────────────
+    // Vide la queue + annule le run en cours. Appelle depuis ton hotkey Ctrl+Alt+Backspace.
+    void EmergencyStop(const wchar_t* reason = L"unknown");
+
+    void SetWhitelistMode(int mode);
+    int  GetWhitelistMode();
+    void SetWhitelist(const std::vector<std::wstring>& apps);  // remplace la liste
+    std::vector<std::wstring> GetWhitelist();
+    void AddToWhitelist(const std::wstring& exeName);          // ex: L"cs2.exe"
+    void RemoveFromWhitelist(const std::wstring& exeName);
+
     // Save / Load
     bool SaveToFile(const wchar_t* path);
     bool LoadFromFile(const wchar_t* path);

@@ -26,9 +26,9 @@ IDI_HALLJOY              ICON         "DrDre-WASD.ico"
 IDI_SMALL                ICON         "DrDre-WASD.ico"
 IDR_WOOTING_WRAPPER      RCDATA       "..\\runtime\\wooting_analog_wrapper.dll"
 IDR_MOUSE_PNG            RCDATA       "..\\assets\\mouse_transparent_defringed.png"
-//IDR_LANTERN_24_PNG       RCDATA       "..\\assets\\watchman_lantern_24.png"
+IDR_LANTERN_24_PNG       RCDATA       "..\\assets\\watchman_lantern_24.png"
 IDR_LANTERN_26_PNG       RCDATA       "..\\assets\\watchman_lantern_26.png"
-IDR_COMBO_PNG           RCDATA       "..\\assets\\combo_28.png"
+IDR_COMBO_PNG           RCDATA       "..\\assets\\combo_24.png"
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -36,14 +36,14 @@ IDR_COMBO_PNG           RCDATA       "..\\assets\\combo_28.png"
 //
 IDC_HALLJOY MENU
 BEGIN
-POPUP "&File"
-BEGIN
-MENUITEM "E&xit", IDM_EXIT
-END
-POPUP "&Help"
-BEGIN
-MENUITEM "&About ...", IDM_ABOUT
-END
+    POPUP "&File"
+    BEGIN
+        MENUITEM "E&xit",                IDM_EXIT
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&About ...",           IDM_ABOUT
+    END
 END
 
 /////////////////////////////////////////////////////////////////////////////
@@ -52,8 +52,8 @@ END
 //
 IDC_HALLJOY ACCELERATORS
 BEGIN
-"?", IDM_ABOUT, ASCII, ALT
-"/", IDM_ABOUT, ASCII, ALT
+    "?",            IDM_ABOUT,              ASCII,  ALT
+    "/",            IDM_ABOUT,              ASCII,  ALT
 END
 
 /////////////////////////////////////////////////////////////////////////////
@@ -65,10 +65,10 @@ STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSM
 CAPTION "About DrDre_WASD"
 FONT 8, "MS Shell Dlg"
 BEGIN
-ICON            IDI_HALLJOY, IDC_STATIC, 14, 14, 21, 20
-LTEXT           "DrDre_WASD", IDC_STATIC, 42, 14, 114, 8, SS_NOPREFIX
-LTEXT           "Copyright (c) 2026", IDC_STATIC, 42, 26, 114, 8
-DEFPUSHBUTTON   "OK", IDOK, 113, 41, 50, 14, WS_GROUP
+    ICON            IDI_HALLJOY,IDC_STATIC,14,14,21,20
+    LTEXT           "DrDre_WASD",IDC_STATIC,42,14,114,8,SS_NOPREFIX
+    LTEXT           "Copyright (c) 2026",IDC_STATIC,42,26,114,8
+    DEFPUSHBUTTON   "OK",IDOK,113,41,50,14,WS_GROUP
 END
 
 /////////////////////////////////////////////////////////////////////////////
@@ -78,13 +78,13 @@ END
 #ifdef APSTUDIO_INVOKED
 GUIDELINES DESIGNINFO
 BEGIN
-IDD_ABOUTBOX, DIALOG
-BEGIN
-LEFTMARGIN, 7
-RIGHTMARGIN, 163
-TOPMARGIN, 7
-BOTTOMMARGIN, 55
-END
+    IDD_ABOUTBOX, DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 163
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 55
+    END
 END
 #endif    // APSTUDIO_INVOKED
 
@@ -95,24 +95,24 @@ END
 //
 1 TEXTINCLUDE
 BEGIN
-"resource.h\0"
+    "resource.h\0"
 END
 
 2 TEXTINCLUDE
 BEGIN
-"#ifndef APSTUDIO_INVOKED\r\n"
-"#include ""targetver.h""\r\n"
-"#endif\r\n"
-"#define APSTUDIO_HIDDEN_SYMBOLS\r\n"
-"#include ""windows.h""\r\n"
-"#undef APSTUDIO_HIDDEN_SYMBOLS\r\n"
-"\0"
+    "#ifndef APSTUDIO_INVOKED\r\n"
+    "#include ""targetver.h""\r\n"
+    "#endif\r\n"
+    "#define APSTUDIO_HIDDEN_SYMBOLS\r\n"
+    "#include ""windows.h""\r\n"
+    "#undef APSTUDIO_HIDDEN_SYMBOLS\r\n"
+    "\0"
 END
 
 3 TEXTINCLUDE
 BEGIN
-"\r\n"
-"\0"
+    "\r\n"
+    "\0"
 END
 
 #endif    // APSTUDIO_INVOKED
@@ -123,8 +123,8 @@ END
 //
 STRINGTABLE
 BEGIN
-IDC_HALLJOY         "HALLJOY"
-IDS_APP_TITLE       "DrDre_WASD"
+    IDC_HALLJOY         "HALLJOY"
+    IDS_APP_TITLE       "DrDre_WASD"
 END
 
 #endif

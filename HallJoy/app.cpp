@@ -29,19 +29,15 @@
 #include "keyboard_ui.h"
 #include "settings.h"
 #include "settings_ini.h"
-#include "macro_editor.h"
-#include "HallJoy_Bind_Macro.h"
 #include "realtime_loop.h"
 #include "win_util.h"
 #include "app_paths.h"
 #include "ui_theme.h"
-#include "macro_system.h"
-#include "mouse_combo_system.h"
 #include "free_combo_system.h"   // ← Nouveau système combos libres v2.0
 #include "Logger.h"
 
 // shared ignore window used by macro senders to prevent retrigger loops
-extern std::atomic<unsigned long long> s_ignoreKeyEventsUntilMs;
+std::atomic<unsigned long long> s_ignoreKeyEventsUntilMs{ 0 };  // défini ici depuis v3.3 (macro_system.cpp supprimé)
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Urlmon.lib")
@@ -390,7 +386,7 @@ static DependencyInstallResult TryInstallMissingDependencies(HWND hwnd, uint32_t
     std::wstring prompt = L"Missing dependencies detected:\n\n";
     prompt += BuildIssuesText(issues);
     prompt += L"\nDownload and run the latest installers from GitHub now?";
-    if (MessageBoxW(hwnd, prompt.c_str(), L"HallJoy", MB_ICONQUESTION | MB_YESNO) != IDYES)
+    if (MessageBoxW(hwnd, prompt.c_str(), L"DrDre_WASD", MB_ICONQUESTION | MB_YESNO) != IDYES)
         return DependencyInstallResult::Skipped;
 
     if (needVigem)
@@ -398,11 +394,11 @@ static DependencyInstallResult TryInstallMissingDependencies(HWND hwnd, uint32_t
         std::wstring installerPath;
         if (!DownloadLatestAssetToTemp({ L"https://api.github.com/repos/ViGEm/ViGEmBus/releases/latest", L"https://api.github.com/repos/nefarius/ViGEmBus/releases/latest" }, { L"vigem", L"bus" }, { L"x64", L"setup", L"installer" }, { L".exe", L".msi" }, installerPath))
         {
-            MessageBoxW(hwnd, L"Failed to download latest ViGEm Bus installer from GitHub.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed;
+            MessageBoxW(hwnd, L"Failed to download latest ViGEm Bus installer from GitHub.", L"DrDre_WASD", MB_ICONERROR); return DependencyInstallResult::Failed;
         }
         if (!RunInstallerElevatedAndWait(hwnd, installerPath))
         {
-            MessageBoxW(hwnd, L"ViGEm Bus installation did not complete successfully.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed;
+            MessageBoxW(hwnd, L"ViGEm Bus installation did not complete successfully.", L"DrDre_WASD", MB_ICONERROR); return DependencyInstallResult::Failed;
         }
     }
 
@@ -411,23 +407,23 @@ static DependencyInstallResult TryInstallMissingDependencies(HWND hwnd, uint32_t
         std::wstring installerPath;
         if (!DownloadLatestAssetToTemp({ L"https://api.github.com/repos/WootingKb/wooting-analog-sdk/releases/latest" }, { L"wooting", L"analog", L"sdk" }, { L"x86_64", L"windows", L"msi" }, { L".msi", L".exe" }, installerPath))
         {
-            MessageBoxW(hwnd, L"Failed to download latest Wooting Analog SDK installer from GitHub.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed;
+            MessageBoxW(hwnd, L"Failed to download latest Wooting Analog SDK installer from GitHub.", L"DrDre_WASD", MB_ICONERROR); return DependencyInstallResult::Failed;
         }
         if (!RunInstallerElevatedAndWait(hwnd, installerPath))
         {
-            MessageBoxW(hwnd, L"Wooting Analog SDK installation did not complete successfully.", L"HallJoy", MB_ICONERROR); return DependencyInstallResult::Failed;
+            MessageBoxW(hwnd, L"Wooting Analog SDK installation did not complete successfully.", L"DrDre_WASD", MB_ICONERROR); return DependencyInstallResult::Failed;
         }
     }
 
     if (suggestUap)
     {
-        if (MessageBoxW(hwnd, L"Install optional Universal Analog Plugin for broader HE keyboard support?", L"HallJoy", MB_ICONQUESTION | MB_YESNO) == IDYES)
+        if (MessageBoxW(hwnd, L"Install optional Universal Analog Plugin for broader HE keyboard support?", L"DrDre_WASD", MB_ICONQUESTION | MB_YESNO) == IDYES)
         {
             std::wstring zipPath;
             if (!DownloadLatestAssetToTemp({ L"https://api.github.com/repos/AnalogSense/universal-analog-plugin/releases/latest" }, { L"windows" }, { L"windows", L"zip" }, { L".zip" }, zipPath))
-                MessageBoxW(hwnd, L"Failed to download Universal Analog Plugin (Windows.zip).", L"HallJoy", MB_ICONWARNING);
+                MessageBoxW(hwnd, L"Failed to download Universal Analog Plugin (Windows.zip).", L"DrDre_WASD", MB_ICONWARNING);
             else if (!InstallUniversalAnalogPluginFromZip(hwnd, zipPath))
-                MessageBoxW(hwnd, L"Universal Analog Plugin installation failed. You can install it manually later.", L"HallJoy", MB_ICONWARNING);
+                MessageBoxW(hwnd, L"Universal Analog Plugin installation failed. You can install it manually later.", L"DrDre_WASD", MB_ICONWARNING);
         }
     }
     return DependencyInstallResult::Installed;
@@ -535,27 +531,6 @@ static LRESULT CALLBACK KeyboardBlockHookProc(int nCode, WPARAM wParam, LPARAM l
     {
         static bool g_hookKeyDown[256] = { 0 };
 
-        // Logs uniquement si recording/binding actif - pas de flood en jeu normal
-        if (MacroSystem::IsRecording())
-        {
-            if (wParam == WM_KEYDOWN || wParam == WM_KEYUP || wParam == WM_SYSKEYDOWN || wParam == WM_SYSKEYUP)
-            {
-                Logger::Info("HOOK_KB", "Avant MacroSystem::ProcessKeyboardInput");
-                MacroSystem::ProcessKeyboardInput((UINT)wParam, wParam, lParam);
-                Logger::Info("HOOK_KB", "MacroSystem::ProcessKeyboardInput OK");
-            }
-        }
-
-        if (HallJoy_Bind_Macro::IsRecording() || HallJoy_Bind_Macro::IsDirectBindingEnabled())
-        {
-            if (wParam == WM_KEYDOWN || wParam == WM_KEYUP || wParam == WM_SYSKEYDOWN || wParam == WM_SYSKEYUP)
-            {
-                Logger::Info("HOOK_KB", "Avant HallJoy_Bind_Macro::ProcessKeyboardInput");
-                HallJoy_Bind_Macro::ProcessKeyboardInput((UINT)wParam, wParam, lParam);
-                Logger::Info("HOOK_KB", "HallJoy_Bind_Macro::ProcessKeyboardInput OK");
-            }
-        }
-
         // FreeComboSystem : toujours actif, ecoute toutes les touches non-injectees
         if (wParam == WM_KEYDOWN || wParam == WM_KEYUP || wParam == WM_SYSKEYDOWN || wParam == WM_SYSKEYUP)
         {
@@ -633,29 +608,6 @@ static LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION && lParam)
     {
-        // Logs uniquement si recording/binding actif - pas de flood en jeu normal
-        if (MacroSystem::IsRecording())
-        {
-            Logger::Info("HOOK_MOUSE", "Avant MacroSystem::ProcessMouseInput");
-            MacroSystem::ProcessMouseInput((UINT)wParam, wParam, lParam);
-            Logger::Info("HOOK_MOUSE", "MacroSystem::ProcessMouseInput OK");
-        }
-
-        if (HallJoy_Bind_Macro::IsRecording() || HallJoy_Bind_Macro::IsDirectBindingEnabled())
-        {
-            Logger::Info("HOOK_MOUSE", "Avant HallJoy_Bind_Macro::ProcessMouseInput");
-            HallJoy_Bind_Macro::ProcessMouseInput((UINT)wParam, wParam, lParam);
-            Logger::Info("HOOK_MOUSE", "HallJoy_Bind_Macro::ProcessMouseInput OK");
-        }
-
-        // MouseComboSystem est toujours appele - throttle 5s pour eviter le flood
-        static ULONGLONG s_lastMouseLog = 0;
-        ULONGLONG nowMs = GetTickCount64();
-        bool doMouseLog = (nowMs - s_lastMouseLog) >= 5000;
-        if (doMouseLog) { Logger::Info("HOOK_MOUSE", "Avant MouseComboSystem::ProcessMouseEvent"); s_lastMouseLog = nowMs; }
-        MouseComboSystem::ProcessMouseEvent((UINT)wParam, wParam, lParam);
-        if (doMouseLog) Logger::Info("HOOK_MOUSE", "MouseComboSystem::ProcessMouseEvent OK");
-
         // FreeComboSystem : toujours actif
         FreeComboSystem::ProcessMouseEvent((UINT)wParam, wParam, lParam);
     }
@@ -731,7 +683,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             std::wstring msgText = L"Backend initialization failed with missing dependencies:\n\n";
             msgText += BuildIssuesText(issues);
             msgText += L"\n\nHallJoy will start in limited mode without analog input and virtual gamepads.";
-            MessageBoxW(hwnd, msgText.c_str(), L"HallJoy - Limited Mode", MB_ICONWARNING | MB_OK);
+            MessageBoxW(hwnd, msgText.c_str(), L"DrDre_WASD - Limited Mode", MB_ICONWARNING | MB_OK);
             Logger::Info("WM_CREATE", "Mode limite - on continue quand meme");
         }
         else
@@ -747,9 +699,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         ApplyTimingSettings(hwnd);
         Logger::Info("WM_CREATE", "ApplyTimingSettings OK");
 
-        Logger::Info("WM_CREATE", "Avant MacroEmergencyStop::Initialize");
-        MacroEmergencyStop::Initialize(hwnd);
-        Logger::Info("WM_CREATE", "MacroEmergencyStop::Initialize OK");
+
 
         Logger::Info("WM_CREATE", "WM_CREATE termine avec succes");
         return 0;
@@ -777,7 +727,6 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_HOTKEY:
-        MacroEmergencyStop::ProcessHotkey(wParam);
         return 0;
 
     case WM_TIMER:
@@ -789,13 +738,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             static ULONGLONG s_lastTimerLog = 0;
             ULONGLONG nowTick = GetTickCount64();
             bool doLog = (nowTick - s_lastTimerLog) >= 5000;
-            if (doLog) { Logger::Info("TIMER", "Avant MacroSystem::Tick"); s_lastTimerLog = nowTick; }
-            MacroSystem::Tick();
-            if (doLog) Logger::Info("TIMER", "Avant HallJoy_Bind_Macro::Tick");
-            HallJoy_Bind_Macro::Tick();
-            if (doLog) Logger::Info("TIMER", "Avant MouseComboSystem::Tick");
-            MouseComboSystem::Tick();
-            FreeComboSystem::Tick();   // ← Tick combos libres v2.0
+            FreeComboSystem::Tick();
             if (doLog) Logger::Info("TIMER", "Tick complet OK");
         }
         else if (wParam == SETTINGS_SAVE_TIMER_ID)
@@ -823,8 +766,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         Logger::Info("WM_DESTROY", "Fermeture fenetre principale");
         KillTimer(hwnd, UI_TIMER_ID);
         KillTimer(hwnd, SETTINGS_SAVE_TIMER_ID);
-        MacroEmergencyStop::Shutdown();
-        Logger::Info("WM_DESTROY", "MacroEmergencyStop::Shutdown OK");
+
 
         WINDOWPLACEMENT wp{};
         wp.length = sizeof(wp);
@@ -852,10 +794,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (g_hKeyboardHook) { UnhookWindowsHookEx(g_hKeyboardHook); g_hKeyboardHook = nullptr; }
         if (g_hMouseHook) { UnhookWindowsHookEx(g_hMouseHook);    g_hMouseHook = nullptr; }
 
-        MacroSystem::Shutdown();
-        MouseComboSystem::Shutdown();
-        FreeComboSystem::Shutdown();   // ← Shutdown combos libres v2.0
-        HallJoy_Bind_Macro::Shutdown();
+        FreeComboSystem::Shutdown();
 
         Logger::Info("WM_DESTROY", "Shutdown complet OK");
         PostQuitMessage(0);
@@ -914,7 +853,7 @@ int App_Run(HINSTANCE hInst, int nCmdShow)
     if (!hasSavedPos || !IsWindowRectVisibleOnAnyScreen(x, y, w, h)) { x = CW_USEDEFAULT; y = CW_USEDEFAULT; }
 
     Logger::Info("APP_RUN", "Avant CreateWindowExW");
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"HallJoy", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, w, h, nullptr, nullptr, hInst, nullptr);
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"DrDre_WASD", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, w, h, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) {
         Logger::Critical("APP_RUN", "CreateWindowExW echoue !");
         return 2;
@@ -926,18 +865,6 @@ int App_Run(HINSTANCE hInst, int nCmdShow)
     if (hSmall) SendMessageW(hwnd, WM_SETICON, (WPARAM)ICON_SMALL, (LPARAM)hSmall);
 
     ShowWindow(hwnd, nCmdShow);
-
-    Logger::Info("APP_RUN", "Avant MacroSystem::Initialize");
-    MacroSystem::Initialize();
-    Logger::Info("APP_RUN", "MacroSystem::Initialize OK");
-
-    Logger::Info("APP_RUN", "Avant HallJoy_Bind_Macro::Initialize");
-    HallJoy_Bind_Macro::Initialize();
-    Logger::Info("APP_RUN", "HallJoy_Bind_Macro::Initialize OK");
-
-    Logger::Info("APP_RUN", "Avant MouseComboSystem::Initialize");
-    MouseComboSystem::Initialize();
-    Logger::Info("APP_RUN", "MouseComboSystem::Initialize OK");
 
     Logger::Info("APP_RUN", "Avant SetWindowsHookExW keyboard");
     g_hKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardBlockHookProc, GetModuleHandleW(nullptr), 0);
@@ -955,7 +882,7 @@ int App_Run(HINSTANCE hInst, int nCmdShow)
         DispatchMessageW(&msg);
     }
 
-    // FIX : hooks, MacroSystem, MouseComboSystem et HallJoy_Bind_Macro::Shutdown
+    // FIX : hooks désinstallés avant PostQuitMessage
     // sont maintenant appelés dans WM_DESTROY, avant PostQuitMessage.
     // On vérifie ici au cas où WM_DESTROY n'aurait pas tout nettoyé (sécurité).
     Logger::Info("APP_RUN", "Sortie boucle messages - nettoyage");

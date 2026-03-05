@@ -49,5 +49,11 @@ namespace FreeComboUI
         ID_EDIT_REPEAT_COUNT  = 2023,  // Run N times
         ID_TIMER_CAPTURE = 2099,
         ID_TIMER_MOUSE_CAPTURE = 2098,  // Poll mouse during action capture
+        // Whitelist UI
+        ID_WL_MODE_CB  = 2090,
+        ID_WL_LIST     = 2091,
+        ID_WL_EDIT     = 2092,
+        ID_WL_BTN_ADD  = 2093,
+        ID_WL_BTN_DEL  = 2094,
     };
 }

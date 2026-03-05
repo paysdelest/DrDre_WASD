@@ -134,6 +134,38 @@ static void EnsureMousePngReady(HINSTANCE hInst)
 }
 
 // ─────────────────────────────────────────────────────────────
+// Lanterne WATCHMAN : extraction dans assets/ au démarrage
+// ─────────────────────────────────────────────────────────────
+static void EnsureLanternPngReady(HINSTANCE hInst)
+{
+    const std::wstring assetsDir = WinUtil_BuildPathNearExe(L"assets");
+    CreateDirectoryW(assetsDir.c_str(), nullptr);
+    const std::wstring p24 = assetsDir + L"\\watchman_lantern_26.png";
+    if (!FileExistsNoDir(p24)) {
+        if (ExtractResourceToFile(hInst, IDR_LANTERN_26_PNG, p24))
+            Logger::Info("LANTERN_PNG", "watchman_lantern_26.png extrait OK -> assets/");
+        else
+            Logger::Warn("LANTERN_PNG", "Echec extraction lantern_24");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Kimono MY COMBOS : extraction dans assets/ au démarrage
+// ─────────────────────────────────────────────────────────────
+static void EnsureKimonoPngReady(HINSTANCE hInst)
+{
+    const std::wstring assetsDir = WinUtil_BuildPathNearExe(L"assets");
+    CreateDirectoryW(assetsDir.c_str(), nullptr);
+    const std::wstring p = assetsDir + L"\\combo_28.png";
+    if (!FileExistsNoDir(p)) {
+        if (ExtractResourceToFile(hInst, IDR_COMBO_PNG, p))
+            Logger::Info("COMBO_PNG", "combo_28.png extrait OK -> assets/");
+        else
+            Logger::Warn("COMBO_PNG", "Echec extraction combo_28");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 // FreeComboSystem : initialisation et arrêt
 // ─────────────────────────────────────────────────────────────
 static void InitFreeComboSystem()
@@ -179,14 +211,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow)
     std::wstring iniPath = WinUtil_BuildPathNearExe(L"settings.ini");
     int loggingEnabled = GetPrivateProfileIntW(L"Main", L"Logging", 0, iniPath.c_str());
     Logger::SetEnabled(loggingEnabled != 0);
-    Logger::Init("HallJoy_log.txt");
+    Logger::Init("DrDre_WASD_log.txt");
     Logger::Info("MAIN", "=== wWinMain demarre ===");
 
     // 2. DLL Wooting
     Logger::Info("MAIN", "Avant EnsureWootingWrapperReady");
     if (!EnsureWootingWrapperReady(hInst)) {
         Logger::Critical("MAIN", "EnsureWootingWrapperReady echoue - arret");
-        MessageBoxW(nullptr, L"Failed to prepare wooting_analog_wrapper.dll near the executable.", L"HallJoy", MB_ICONERROR | MB_OK);
+        MessageBoxW(nullptr, L"Failed to prepare wooting_analog_wrapper.dll near the executable.", L"DrDre_WASD", MB_ICONERROR | MB_OK);
         Logger::Close(); return 1;
     }
     Logger::Info("MAIN", "EnsureWootingWrapperReady OK");
@@ -194,8 +226,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow)
     // 3. DPI
     InitDpiAwareness();
 
-    // 3b. PNG souris (extraction dans assets/ si absent)
+    // 3b. PNG souris + lanterne WATCHMAN (extraction dans assets/ si absent)
     EnsureMousePngReady(hInst);
+    EnsureLanternPngReady(hInst);
+    EnsureKimonoPngReady(hInst);
 
     // 4. GDI+
     Logger::Info("MAIN", "Avant GdiplusStartup");

@@ -51,6 +51,9 @@ static void ResizeSubUi(HWND hWnd);
 static LRESULT CALLBACK KeyBtnSubclassProc(HWND hBtn, UINT msg, WPARAM wParam, LPARAM lParam,
     UINT_PTR, DWORD_PTR dwRefData);
 static void EnsureFreeComboPageCreated(HWND hTabParent);
+//ajout-->
+static constexpr int HOTKEY_EMERGENCY_STOP = 0xE5B; // id arbitraire
+//ajout<--
 
 struct KeyboardViewMetrics
 {
@@ -2689,7 +2692,9 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         SetTimer(hWnd, 9104, 16, nullptr); // mouse view 60fps timer
         // Hotkeys for mouse overlay calibration (works even when focus is on child controls)
         RegisterHotKey(hWnd, 0xC08, MOD_NOREPEAT, VK_F8);  // toggle Synapse vector mode (when no PNG)
-
+        //Ajout-->
+        RegisterHotKey(hWnd, HOTKEY_EMERGENCY_STOP, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_BACK);
+        //Ajout<--
         Profile_LoadIni(AppPaths_BindingsIni().c_str());
 
         RebuildKeyboardButtons(hWnd);
@@ -2953,21 +2958,51 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         }
         break;
     }
-
-case WM_LBUTTONDOWN:
-
+    //Ajout-->
+    case WM_HOTKEY:
     {
+        if ((int)wParam == HOTKEY_EMERGENCY_STOP)
+        {
+            // Son (simple, sans dépendance)
+            MessageBeep(MB_ICONHAND); // ou MB_ICONWARNING / MB_OK
 
-        // Selection clear works only in Configuration tab
+            // Arrêt d'urgence — vide la queue + annule le run en cours
+            FreeComboSystem::EmergencyStop(L"user-hotkey");
+
+            return 0;
+        }
+        break;
+    }
+    //Ajout<--
+
+
+    //Ajout-->
+    case WM_LBUTTONDOWN:
+    {
         if (g_activeSubTab == 1 && !g_kdrag.dragging && !g_kdrag.shrinking)
         {
             POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
             HWND child = ChildWindowFromPointEx(hWnd, pt, CWP_SKIPINVISIBLE);
-            if (!child || child == hWnd)
+
+            // Si on a cliqué sur une touche (un de tes buttons du clavier), on ne clear pas.
+            bool clickedKeyButton = false;
+            if (child && child != hWnd && GetParent(child) == hWnd)
+            {
+                uint16_t hid = (uint16_t)GetWindowLongPtrW(child, GWLP_USERDATA);
+                if (hid != 0 && KeyboardUI_HasHid(hid))
+                    clickedKeyButton = true;
+            }
+
+            if (!clickedKeyButton)
+            {
                 SetSelectedHid(0);
+                return 0;
+            }
         }
-        return 0;
+        break;
     }
+    //Ajout<--
+
 
     case WM_COMMAND:
         if (HIWORD(wParam) == BN_CLICKED)
@@ -3054,7 +3089,11 @@ case WM_LBUTTONDOWN:
     break;
     case WM_DESTROY:
         UnregisterHotKey(hWnd, 0xC08);
-
+        
+        //Ajout-->
+        UnregisterHotKey(hWnd, HOTKEY_EMERGENCY_STOP);
+        //Ajout<--
+       
         KeyDrag_Stop();
         if (g_kdrag.hGhost)
         {

@@ -71,10 +71,10 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <TargetName>DrDre_WASD_v3.0</TargetName>
+    <TargetName>DrDre_WASD_v4.0</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <TargetName>DrDre_WASD_v3.0</TargetName>
+    <TargetName>DrDre_WASD_v4.0</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -192,16 +192,7 @@ xcopy /Y "$(SolutionDir)runtime\wooting_analog_wrapper.dll" "$(OutDir)"
     <ClInclude Include="keyboard_ui_internal.h" />
     <ClInclude Include="keyboard_ui_state.h" />
     <ClInclude Include="key_settings.h" />
-    <ClInclude Include="macro_system.h" />
-    <ClInclude Include="macro_ui.h" />
-    <ClInclude Include="macro_advanced_system.h" />
-    <ClInclude Include="macro_advanced_ui.h" />
-    <ClInclude Include="macro_editor.h" />
-    <ClInclude Include="macro_json_storage.h" />
     <ClInclude Include="mouse_combo_system.h" />
-    <ClInclude Include="mouse_combo_ui.h" />
-    <ClInclude Include="HallJoy_Bind_Macro.h" />
-    <ClInclude Include="HallJoy_Bind_Macro_Test.h" />
     <ClInclude Include="premium_combo.h" />
     <ClInclude Include="premium_combo_internal.h" />
     <ClInclude Include="profile_ini.h" />
@@ -253,17 +244,8 @@ xcopy /Y "$(SolutionDir)runtime\wooting_analog_wrapper.dll" "$(OutDir)"
     <ClCompile Include="keyboard_subpages.cpp" />
     <ClCompile Include="keyboard_ui.cpp" />
     <ClCompile Include="key_settings.cpp" />
-    <ClCompile Include="macro_system.cpp" />
-    <ClCompile Include="macro_ui.cpp" />
-    <ClCompile Include="macro_advanced_system.cpp" />
-    <ClCompile Include="macro_advanced_ui.cpp" />
-    <ClCompile Include="macro_editor.cpp" />
-    <ClCompile Include="macro_json_storage.cpp" />
-    <ClCompile Include="mouse_combo_system.cpp" />
-    <ClCompile Include="mouse_combo_ui.cpp" />
-    <ClCompile Include="HallJoy_Bind_Macro.cpp" />
-    <ClCompile Include="HallJoy_Bind_Macro_Test.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="mouse_combo_system.cpp" />
     <ClCompile Include="premium_combo_anim.cpp" />
     <ClCompile Include="premium_combo_core.cpp" />
     <ClCompile Include="premium_combo_logic.cpp" />
