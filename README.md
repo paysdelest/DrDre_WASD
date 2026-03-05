@@ -251,6 +251,116 @@ Perfect for verifying macro triggers visually.
 
 ---
 
+
+## 🛡️ Macro Safety System
+
+DrDre_WASD includes a built-in macro safety system designed to prevent runaway macros, accidental input injection into the wrong application, and infinite loops — without any impact on normal usage.
+
+---
+
+### Emergency Stop
+
+**Shortcut: `Ctrl + Alt + Backspace`**
+
+Immediately halts all macro activity:
+- Clears the entire execution queue
+- Cancels the currently running macro
+- Logs the reason to the debug output
+
+You can also call it programmatically:
+```cpp
+FreeComboSystem::EmergencyStop(L"user-hotkey");
+```
+
+> **Note:** The worker thread stops cleanly between actions — it does not kill mid-keystroke, which avoids leaving physical keys stuck in a pressed state.
+
+---
+
+### Watchdog
+
+Three independent limits run simultaneously in the background. All violations are logged to the debug output (`OutputDebugStringW` — visible in Visual Studio Output or [DebugView](https://learn.microsoft.com/en-us/sysinternals/downloads/debugview)).
+
+#### 1. Runtime Timeout — 10 seconds
+A macro that runs for more than **10 seconds continuously** is stopped.
+
+```
+[WATCHDOG] Macro stopped — reason: timeout — macro: RapidFire — runtime: 12.4s
+```
+
+- The timer resets between each run, so a macro set to "Run N times" gets 10s per run
+- `Delay` actions respect the timeout — a 15s delay will be cut at 10s
+
+#### 2. Max Actions — 500 per run
+A run that executes more than **500 individual actions** is stopped.
+
+```
+[WATCHDOG] Macro stopped — reason: max actions (500) — macro: SpamMacro
+```
+
+- Every `PressKey`, `ReleaseKey`, `TapKey`, `MouseClick`, `Delay`, and `TypeText` counts as one action
+- For `TypeText`, **each character** counts individually — a 600-character string triggers the limit
+
+#### 3. Trigger Rate Limit — 50 triggers/second
+A `repeatWhileHeld` macro that fires more than **50 times per second** triggers a **hard stop** — the queue is cleared and the current run is cancelled.
+
+```
+[WATCHDOG] Hard stop — reason: rate limit (>50/s) — macro: BrokenMacro
+```
+
+- This is stricter than the other two limits because a runaway trigger rate would immediately refill the queue
+- Typically caused by `repeatDelayMs = 0` combined with a very fast loop
+
+---
+
+### WatchMan
+
+Prevents macros from sending keystrokes or mouse input into applications that are not explicitly whitelisted.
+
+**Accessible from the Macro Custom tab → INJECTION GUARD panel**
+
+| Mode | Behavior |
+|------|----------|
+| `OFF` | Inject everywhere (default) |
+| `WHITELIST` | Only inject if the foreground app is in the allowed list |
+
+**How it works:**
+Before every `SendInput` call, the engine checks the foreground window's process name against your whitelist using `QueryFullProcessImageNameW`. The comparison is case-insensitive (`cs2.exe` = `CS2.EXE`).
+
+**Protected action types:** `PressKey`, `ReleaseKey`, `TapKey`, `MouseClick`, `TypeText`
+
+**Not protected:** `Delay` — pauses always execute regardless of the foreground app.
+
+**Adding apps to the whitelist:**
+1. Open the **Macro Custom** tab
+2. In the **INJECTION GUARD** panel at the bottom left, select `WHITELIST - Allowed apps only`
+3. Type the executable name (e.g. `cs2.exe`) and click `+`
+4. Save any combo — the whitelist is persisted in the `.fcombos` file
+
+**Persistence:**
+The whitelist is saved in the `DRDRE_FREECOMBOS_V5` format. Files from earlier versions (V1–V4) load normally with the whitelist empty and mode set to OFF.
+
+```
+WL_MODE 1
+WL_COUNT 2
+WL_ENTRY cs2.exe
+WL_ENTRY valorant.exe
+```
+
+> **Known limitation:** If the foreground process is elevated (e.g. running as Administrator) and DrDre_WASD is not, `OpenProcess()` may fail and injection will be blocked for that app even if it is whitelisted.
+
+---
+
+### Limits & Known Gaps
+
+| Issue | Status |
+|-------|--------|
+| Keys held down at watchdog stop | Not auto-released — use `Ctrl+Alt+Backspace` to fully reset |
+| Whitelist not reloaded into the UI list on startup | Visual only — the engine loads and applies the whitelist correctly |
+| Watchdog limits are compile-time constants | Cannot be changed from the UI — edit `kWD_MaxRuntimeMs`, `kWD_MaxActions`, `kWD_MaxTrigsPerSec` in `free_combo_system.cpp` |
+| Debug logs only visible in DebugView / VS Output | No in-app log panel yet |
+
+---
+
 ## 🏗️ DrDre_WASD Input Architecture
 
 DrDre_WASD processes input through three distinct pipelines:
