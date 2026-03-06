@@ -22,7 +22,7 @@ Release/
 # assets/images/
 
 # ignorer le logo
-DrDre-WASD.png
+# DrDre-WASD.png
 
 # garder assets README
 !assets/
