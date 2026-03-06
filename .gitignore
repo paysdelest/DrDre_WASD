@@ -19,7 +19,7 @@ Release/
 *.idb
 
 # ignorer le dossier images dans assets
-assets/images/
+# assets/images/
 
 # ignorer le logo
 DrDre-WASD.png
