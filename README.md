@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="DrDre-WASD.png" width="420"/>
+  <img src="https://github.com/user-attachments/assets/af8e7d15-9f30-4b85-8157-1231d631a11f" width="420"/>
 </p>
 
 <h1 align="center">DrDre_WASD</h1>
@@ -21,19 +21,19 @@
 ## 🖼️ Interface Preview
 
 <p align="center">
-  <img src="assets/images/interface1.png" width="800"/>
+  <img src="https://github.com/user-attachments/assets/e30a7bd0-5c8d-4620-b018-8cd4fe8ed531" width="800"/>
 </p>
 
 <p align="center">
-  <img src="assets/images/interface2.png" width="800"/>
+  <img src="https://github.com/user-attachments/assets/53dcb964-6d6d-4a76-9d40-e0065aa59845" width="800"/>
 </p>
 
 <p align="center">
-  <img src="assets/images/interface3.png" width="800"/>
+  <img src="https://github.com/user-attachments/assets/1561b97c-6605-4866-81c1-6d06a7d39748" width="800"/>
 </p>
 
 <p align="center">
-  <img src="assets/images/interface4.png" width="800"/>
+  <img src="https://github.com/user-attachments/assets/fa9de216-9203-4c64-a08b-1668247c67d7" width="800"/>
 </p>
 
 ---

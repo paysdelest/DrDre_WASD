@@ -18,15 +18,11 @@ Release/
 *.obj
 *.idb
 
-# ignorer le dossier images dans assets
-# assets/images/
-
+# Images not distributed to users
+assets/images/
+DrDre-WASD.png
 # ignorer le logo
 # DrDre-WASD.png
-
-# garder assets README
-!assets/
-!assets/*
 
 # Except our fixed DLLs in plugins/ - keep them
 !plugins/abiv0.dll
