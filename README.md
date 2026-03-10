@@ -280,6 +280,10 @@ FreeComboSystem::EmergencyStop(L"user-hotkey");
 
 Three independent limits run simultaneously in the background. All violations are logged to the debug output (`OutputDebugStringW` — visible in Visual Studio Output or [DebugView](https://learn.microsoft.com/en-us/sysinternals/downloads/debugview)).
 
+Cannot be changed from the UI — 
+edit kWD_MaxRuntimeMs, kWD_MaxActions, kWD_MaxTrigsPerSec 
+in free_combo_system.cpp
+
 #### 1. Runtime Timeout — 10 seconds
 A macro that runs for more than **10 seconds continuously** is stopped.
 
@@ -358,7 +362,6 @@ WL_ENTRY valorant.exe
 | Issue | Status |
 |-------|--------|
 | Keys held down at watchdog stop | Not auto-released — use `Ctrl+Alt+Backspace` to fully reset |
-| Whitelist not reloaded into the UI list on startup | Visual only — the engine loads and applies the whitelist correctly |
 | Watchdog limits are compile-time constants | Cannot be changed from the UI — edit `kWD_MaxRuntimeMs`, `kWD_MaxActions`, `kWD_MaxTrigsPerSec` in `free_combo_system.cpp` |
 | Debug logs only visible in DebugView / VS Output | No in-app log panel yet |
 
