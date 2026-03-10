@@ -348,6 +348,9 @@ WL_ENTRY valorant.exe
 
 > **Known limitation:** If the foreground process is elevated (e.g. running as Administrator) and DrDre_WASD is not, `OpenProcess()` may fail and injection will be blocked for that app even if it is whitelisted.
 
+> **Workaround:** Launch DrDre_WASD as Administrator
+> to resolve elevated process injection issues.
+
 ---
 
 ### Limits & Known Gaps
@@ -427,7 +430,7 @@ A fix has been submitted upstream to [universal-analog-plugin](https://github.co
 
 - **All analog values at 0** — check your keyboard's firmware mode. Some keyboards disable analog SDK output when **Turbo mode** is enabled. Disable it and restart.
 - **Analog stops working after a plugin update** — reinstall the DLL files from this repository and keep only one plugin variant in `C:\Program Files\WootingAnalogPlugins\`
-- **Macro does not trigger** — check whether the emergency stop was activated (`Ctrl+Shift+Backspace`), or verify the macro is enabled (green dot in the list)
+- **Macro does not trigger** — check whether the emergency stop was activated (`Ctrl+alt+Backspace`), or verify the macro is enabled (green dot in the list)
 - **Macro enabled but not firing** — make sure the trigger combination is not captured by another application or system shortcut
 - **Controls do not resize correctly** — make sure you are using v2.0 or later; previous builds had a WM_SIZE layout bug when the tab was hidden
 
