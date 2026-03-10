@@ -337,7 +337,7 @@ Before every `SendInput` call, the engine checks the foreground window's process
 4. Save any combo — the whitelist is persisted in the `.fcombos` file
 
 **Persistence:**
-The whitelist is saved in the `DRDRE_FREECOMBOS_V5` format. Files from earlier versions (V1–V4) load normally with the whitelist empty and mode set to OFF.
+The whitelist is saved in the `free_combos.dat` format. Files from earlier versions (V1–V4) load normally with the whitelist empty and mode set to OFF.
 
 ```
 WL_MODE 1
@@ -408,7 +408,6 @@ DrDre_WASD processes input through three distinct pipelines:
 
 > ⚠️ **Note**: `wooting_analog_sdk.dll` and `wooting_analog_wrapper.dll` are included in the `runtime\` folder of this repository and bundled in the source zip. If downloading v1.0, get them from the [runtime folder](https://github.com/paysdelest/DrDre_WASD/tree/main/runtime) or from [Wooting Analog SDK releases](https://github.com/WootingKb/wooting-analog-sdk/releases) and place them in `runtime\` before building.
 
-> ⚠️ **Note for developers**: `free_combo_system.cpp` and `free_combo_ui.cpp` must be explicitly added to the Visual Studio project (right-click project → **Add → Existing Item**). They are not referenced in the `.vcxproj` by default.
 
 ---
 
@@ -428,7 +427,7 @@ A fix has been submitted upstream to [universal-analog-plugin](https://github.co
 
 - **All analog values at 0** — check your keyboard's firmware mode. Some keyboards disable analog SDK output when **Turbo mode** is enabled. Disable it and restart.
 - **Analog stops working after a plugin update** — reinstall the DLL files from this repository and keep only one plugin variant in `C:\Program Files\WootingAnalogPlugins\`
-- **Macro does not trigger** — check whether the emergency stop was activated (`Ctrl+Shift+Alt+F12`), or verify the macro is enabled (green dot in the list)
+- **Macro does not trigger** — check whether the emergency stop was activated (`Ctrl+Shift+Backspace`), or verify the macro is enabled (green dot in the list)
 - **Macro enabled but not firing** — make sure the trigger combination is not captured by another application or system shortcut
 - **Controls do not resize correctly** — make sure you are using v2.0 or later; previous builds had a WM_SIZE layout bug when the tab was hidden
 
@@ -498,7 +497,7 @@ MIT — free to use, modify and redistribute. See [LICENSE](LICENSE).
 
 ---
 
-*DrDre_WASD v2.3 — Precision Input Automation for Hall-Effect Keyboards*
+*DrDre_WASD — Precision Input Automation for Hall-Effect Keyboards*
 
 ---
 
