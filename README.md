@@ -361,7 +361,6 @@ WL_ENTRY valorant.exe
 
 | Issue | Status |
 |-------|--------|
-| Keys held down at watchdog stop | Not auto-released — use `Ctrl+Alt+Backspace` to fully reset |
 | Watchdog limits are compile-time constants | Cannot be changed from the UI — edit `kWD_MaxRuntimeMs`, `kWD_MaxActions`, `kWD_MaxTrigsPerSec` in `free_combo_system.cpp` |
 | Debug logs only visible in DebugView / VS Output | No in-app log panel yet |
 
