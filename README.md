@@ -422,7 +422,7 @@ A critical bug was identified and fixed in the **universal-analog-plugin** (`abi
 
 **Root cause**: `awaitCompletion()` was called while `devices_mtx` was still held. The internal device thread then called `discover_devices()`, which also tries to acquire `devices_mtx` — deadlock. Windows force-terminated the thread, corrupting internal pointers.
 
-**Fix**: split `unload()` into two passes — `cancelReceiveReport()` with the lock held, then `awaitCompletion()` after releasing the lock. The fixed DLL runs stably for 12h+.
+**Fix**: split `unload()` into two passes — `cancelReceiveReport()` with the lock held, then `awaitCompletion()` after releasing the lock. The fixed DLL runs stably for 24h+.
 
 A fix has been submitted upstream to [universal-analog-plugin](https://github.com/calamity-inc/universal-analog-plugin).
 
