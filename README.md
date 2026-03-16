@@ -187,7 +187,8 @@ You can also type the button name directly in the value field without using the 
 
 ---
 
-⚠️ ## ⏱️ Hold Delay
+⚠️ 
+### ⏱️ Hold Delay
 
 Each combo can now require a **minimum hold duration** before the first action fires.
 
