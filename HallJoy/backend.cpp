@@ -52,6 +52,7 @@ static constexpr int kMaxVirtualPads = 4;
 static std::array<PVIGEM_TARGET, kMaxVirtualPads> g_pads{};
 static std::atomic<int> g_virtualPadCount{ 1 };
 static std::atomic<bool> g_virtualPadsEnabled{ true };
+static std::atomic<bool> g_remapEnabled{ true };        // F1: Remap Toggle
 static int g_connectedPadCount = 0;
 
 static std::array<XUSB_REPORT, kMaxVirtualPads> g_reports{};
@@ -125,9 +126,9 @@ static float Clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
 static float ApplyCurve_LinearSegments(float x, const CurveDef& c)
 {
     float xa, ya, xb, yb;
-    if (x <= c.x1)      { xa = c.x0; ya = c.y0; xb = c.x1; yb = c.y1; }
+    if (x <= c.x1) { xa = c.x0; ya = c.y0; xb = c.x1; yb = c.y1; }
     else if (x <= c.x2) { xa = c.x1; ya = c.y1; xb = c.x2; yb = c.y2; }
-    else                 { xa = c.x2; ya = c.y2; xb = c.x3; yb = c.y3; }
+    else { xa = c.x2; ya = c.y2; xb = c.x3; yb = c.y3; }
 
     float denom = (xb - xa);
     if (std::fabs(denom) < 1e-6f) return Clamp01(yb);
@@ -155,7 +156,7 @@ static CurveDef BuildCurveForHid(uint16_t hid)
     if (ks.useUnique)
     {
         c.invert = ks.invert;
-        c.mode   = (UINT)(ks.curveMode == 0 ? 0 : 1);
+        c.mode = (UINT)(ks.curveMode == 0 ? 0 : 1);
         c.x0 = ks.low;    c.y0 = ks.antiDeadzone;
         c.x1 = ks.cp1_x;  c.y1 = ks.cp1_y;
         c.x2 = ks.cp2_x;  c.y2 = ks.cp2_y;
@@ -165,7 +166,7 @@ static CurveDef BuildCurveForHid(uint16_t hid)
     else
     {
         c.invert = Settings_GetInputInvert();
-        c.mode   = Settings_GetInputCurveMode();
+        c.mode = Settings_GetInputCurveMode();
         c.x0 = Settings_GetInputDeadzoneLow();
         c.x3 = Settings_GetInputDeadzoneHigh();
         c.y0 = Settings_GetInputAntiDeadzone();
@@ -248,7 +249,7 @@ static bool Vigem_ReconnectThrottled(bool force = false)
     ULONGLONG now = GetTickCount64();
     if (!force && now - g_lastReconnectAttemptMs < 1000) return false;
     g_lastReconnectAttemptMs = now;
-    g_vigemUpdateFailStreak  = 0;
+    g_vigemUpdateFailStreak = 0;
     g_ignoreDeviceChangeUntilMs.store(now + 1500, std::memory_order_release);
     Vigem_Destroy();
 
@@ -362,7 +363,7 @@ static float ReadFiltered01Cached(uint16_t hidKeycode, HidCache& cache)
     {
         if (cache.hasFiltered.test(hidKeycode))
             return cache.filtered[hidKeycode];
-        float raw      = ReadRaw01Cached(hidKeycode, cache);
+        float raw = ReadRaw01Cached(hidKeycode, cache);
         float filtered = ApplyCurveByHid(hidKeycode, raw);
         cache.filtered[hidKeycode] = filtered;
         cache.hasFiltered.set(hidKeycode);
@@ -380,7 +381,7 @@ static float ReadFiltered01CachedHardware(uint16_t hidKeycode, HidCache& cache)
     {
         if (cache.hasFiltered.test(hidKeycode))
             return cache.filtered[hidKeycode];
-        float raw      = ReadRaw01Hardware(hidKeycode, cache);
+        float raw = ReadRaw01Hardware(hidKeycode, cache);
         float filtered = ApplyCurveByHid(hidKeycode, raw);
         {
             char dbg[128];
@@ -392,7 +393,7 @@ static float ReadFiltered01CachedHardware(uint16_t hidKeycode, HidCache& cache)
         return filtered;
     }
 
-    float raw      = ReadRaw01Hardware(hidKeycode, cache);
+    float raw = ReadRaw01Hardware(hidKeycode, cache);
     float filtered = ApplyCurveByHid(hidKeycode, raw);
     {
         char dbg[128];
@@ -434,9 +435,9 @@ static bool Pressed(float v01) { return v01 >= 0.10f; }
 
 static std::array<std::array<uint8_t, 4>, kMaxVirtualPads> g_snappyPrevMinusDown{};
 static std::array<std::array<uint8_t, 4>, kMaxVirtualPads> g_snappyPrevPlusDown{};
-static std::array<std::array<int8_t,  4>, kMaxVirtualPads> g_snappyLastDir{};
-static std::array<std::array<float,   4>, kMaxVirtualPads> g_snappyMinusValley{};
-static std::array<std::array<float,   4>, kMaxVirtualPads> g_snappyPlusValley{};
+static std::array<std::array<int8_t, 4>, kMaxVirtualPads> g_snappyLastDir{};
+static std::array<std::array<float, 4>, kMaxVirtualPads> g_snappyMinusValley{};
+static std::array<std::array<float, 4>, kMaxVirtualPads> g_snappyPlusValley{};
 
 static int AxisIndexSafe(Axis a)
 {
@@ -450,7 +451,7 @@ static int AxisIndexSafe(Axis a)
 
 static float AxisValue_WithConflictModes(int padIndex, Axis a, float minusV, float plusV)
 {
-    const bool snapStick       = Settings_GetSnappyJoystick();
+    const bool snapStick = Settings_GetSnappyJoystick();
     const bool lastKeyPriority = Settings_GetLastKeyPriority();
     if (!snapStick && !lastKeyPriority) return plusV - minusV;
 
@@ -458,14 +459,14 @@ static float AxisValue_WithConflictModes(int padIndex, Axis a, float minusV, flo
     if (idx < 0 || idx >= 4) return plusV - minusV;
 
     bool minusDown = Pressed(minusV);
-    bool plusDown  = Pressed(plusV);
+    bool plusDown = Pressed(plusV);
 
     int p = std::clamp(padIndex, 0, kMaxVirtualPads - 1);
     bool prevMinus = (g_snappyPrevMinusDown[(size_t)p][idx] != 0);
-    bool prevPlus  = (g_snappyPrevPlusDown[(size_t)p][idx]  != 0);
+    bool prevPlus = (g_snappyPrevPlusDown[(size_t)p][idx] != 0);
 
     if (minusDown && !prevMinus) g_snappyLastDir[(size_t)p][idx] = -1;
-    if (plusDown  && !prevPlus)  g_snappyLastDir[(size_t)p][idx] = +1;
+    if (plusDown && !prevPlus)  g_snappyLastDir[(size_t)p][idx] = +1;
 
     if (lastKeyPriority)
     {
@@ -489,7 +490,7 @@ static float AxisValue_WithConflictModes(int padIndex, Axis a, float minusV, flo
     }
 
     g_snappyPrevMinusDown[(size_t)p][idx] = minusDown ? 1u : 0u;
-    g_snappyPrevPlusDown[(size_t)p][idx]  = plusDown  ? 1u : 0u;
+    g_snappyPrevPlusDown[(size_t)p][idx] = plusDown ? 1u : 0u;
 
     float maxV = std::max(minusV, plusV);
     if (maxV <= 0.0001f) return 0.0f;
@@ -497,7 +498,7 @@ static float AxisValue_WithConflictModes(int padIndex, Axis a, float minusV, flo
     if (lastKeyPriority)
     {
         if (minusDown && !plusDown) return -minusV;
-        if (plusDown  && !minusDown) return +plusV;
+        if (plusDown && !minusDown) return +plusV;
     }
 
     if (lastKeyPriority && minusDown && plusDown)
@@ -561,7 +562,7 @@ static XUSB_REPORT BuildReportForPad(int padIndex, HidCache& cache)
     auto applyAxis = [&](Axis a, SHORT& out) {
         AxisBinding b = Bindings_GetAxisForPad(padIndex, a);
         float minusV = ReadFiltered01Hardware(b.minusHid);
-        float plusV  = ReadFiltered01Hardware(b.plusHid);
+        float plusV = ReadFiltered01Hardware(b.plusHid);
         {
             char dbg[160];
             _snprintf_s(dbg, sizeof(dbg), _TRUNCATE,
@@ -570,31 +571,31 @@ static XUSB_REPORT BuildReportForPad(int padIndex, HidCache& cache)
             OutputDebugStringA(dbg);
         }
         out = StickFromMinus1Plus1(AxisValue_WithConflictModes(padIndex, a, minusV, plusV));
-    };
+        };
 
     applyAxis(Axis::LX, report.sThumbLX);
     applyAxis(Axis::LY, report.sThumbLY);
     applyAxis(Axis::RX, report.sThumbRX);
     applyAxis(Axis::RY, report.sThumbRY);
 
-    report.bLeftTrigger  = TriggerByte01(ReadFiltered01Cached(Bindings_GetTriggerForPad(padIndex, Trigger::LT), cache));
+    report.bLeftTrigger = TriggerByte01(ReadFiltered01Cached(Bindings_GetTriggerForPad(padIndex, Trigger::LT), cache));
     report.bRightTrigger = TriggerByte01(ReadFiltered01Cached(Bindings_GetTriggerForPad(padIndex, Trigger::RT), cache));
 
-    SetBtn(report, XUSB_GAMEPAD_A,             BtnPressedFromMask(padIndex, GameButton::A,         cache));
-    SetBtn(report, XUSB_GAMEPAD_B,             BtnPressedFromMask(padIndex, GameButton::B,         cache));
-    SetBtn(report, XUSB_GAMEPAD_X,             BtnPressedFromMask(padIndex, GameButton::X,         cache));
-    SetBtn(report, XUSB_GAMEPAD_Y,             BtnPressedFromMask(padIndex, GameButton::Y,         cache));
-    SetBtn(report, XUSB_GAMEPAD_LEFT_SHOULDER, BtnPressedFromMask(padIndex, GameButton::LB,        cache));
-    SetBtn(report, XUSB_GAMEPAD_RIGHT_SHOULDER,BtnPressedFromMask(padIndex, GameButton::RB,        cache));
-    SetBtn(report, XUSB_GAMEPAD_BACK,          BtnPressedFromMask(padIndex, GameButton::Back,      cache));
-    SetBtn(report, XUSB_GAMEPAD_START,         BtnPressedFromMask(padIndex, GameButton::Start,     cache));
-    SetBtn(report, XUSB_GAMEPAD_GUIDE,         BtnPressedFromMask(padIndex, GameButton::Guide,     cache));
-    SetBtn(report, XUSB_GAMEPAD_LEFT_THUMB,    BtnPressedFromMask(padIndex, GameButton::LS,        cache));
-    SetBtn(report, XUSB_GAMEPAD_RIGHT_THUMB,   BtnPressedFromMask(padIndex, GameButton::RS,        cache));
-    SetBtn(report, XUSB_GAMEPAD_DPAD_UP,       BtnPressedFromMask(padIndex, GameButton::DpadUp,    cache));
-    SetBtn(report, XUSB_GAMEPAD_DPAD_DOWN,     BtnPressedFromMask(padIndex, GameButton::DpadDown,  cache));
-    SetBtn(report, XUSB_GAMEPAD_DPAD_LEFT,     BtnPressedFromMask(padIndex, GameButton::DpadLeft,  cache));
-    SetBtn(report, XUSB_GAMEPAD_DPAD_RIGHT,    BtnPressedFromMask(padIndex, GameButton::DpadRight, cache));
+    SetBtn(report, XUSB_GAMEPAD_A, BtnPressedFromMask(padIndex, GameButton::A, cache));
+    SetBtn(report, XUSB_GAMEPAD_B, BtnPressedFromMask(padIndex, GameButton::B, cache));
+    SetBtn(report, XUSB_GAMEPAD_X, BtnPressedFromMask(padIndex, GameButton::X, cache));
+    SetBtn(report, XUSB_GAMEPAD_Y, BtnPressedFromMask(padIndex, GameButton::Y, cache));
+    SetBtn(report, XUSB_GAMEPAD_LEFT_SHOULDER, BtnPressedFromMask(padIndex, GameButton::LB, cache));
+    SetBtn(report, XUSB_GAMEPAD_RIGHT_SHOULDER, BtnPressedFromMask(padIndex, GameButton::RB, cache));
+    SetBtn(report, XUSB_GAMEPAD_BACK, BtnPressedFromMask(padIndex, GameButton::Back, cache));
+    SetBtn(report, XUSB_GAMEPAD_START, BtnPressedFromMask(padIndex, GameButton::Start, cache));
+    SetBtn(report, XUSB_GAMEPAD_GUIDE, BtnPressedFromMask(padIndex, GameButton::Guide, cache));
+    SetBtn(report, XUSB_GAMEPAD_LEFT_THUMB, BtnPressedFromMask(padIndex, GameButton::LS, cache));
+    SetBtn(report, XUSB_GAMEPAD_RIGHT_THUMB, BtnPressedFromMask(padIndex, GameButton::RS, cache));
+    SetBtn(report, XUSB_GAMEPAD_DPAD_UP, BtnPressedFromMask(padIndex, GameButton::DpadUp, cache));
+    SetBtn(report, XUSB_GAMEPAD_DPAD_DOWN, BtnPressedFromMask(padIndex, GameButton::DpadDown, cache));
+    SetBtn(report, XUSB_GAMEPAD_DPAD_LEFT, BtnPressedFromMask(padIndex, GameButton::DpadLeft, cache));
+    SetBtn(report, XUSB_GAMEPAD_DPAD_RIGHT, BtnPressedFromMask(padIndex, GameButton::DpadRight, cache));
 
     return report;
 }
@@ -602,7 +603,7 @@ static XUSB_REPORT BuildReportForPad(int padIndex, HidCache& cache)
 static bool IsReportSignificantlyDifferent(const XUSB_REPORT& a, const XUSB_REPORT& b)
 {
     if (a.wButtons != b.wButtons) return true;
-    if (std::abs((int)a.bLeftTrigger  - (int)b.bLeftTrigger)  >= 2) return true;
+    if (std::abs((int)a.bLeftTrigger - (int)b.bLeftTrigger) >= 2) return true;
     if (std::abs((int)a.bRightTrigger - (int)b.bRightTrigger) >= 2) return true;
     if (std::abs((int)a.sThumbLX - (int)b.sThumbLX) >= 256) return true;
     if (std::abs((int)a.sThumbLY - (int)b.sThumbLY) >= 256) return true;
@@ -623,8 +624,8 @@ bool Backend_Init()
 
     // FIX : initialisation explicite des tableaux atomic
     for (auto& v : g_macroAnalogValid)    v.store(false, std::memory_order_relaxed);
-    for (auto& v : g_macroAnalogCache)    v.store(0.0f,  std::memory_order_relaxed);
-    for (auto& v : g_macroAnalogExpireMs) v.store(0ULL,  std::memory_order_relaxed);
+    for (auto& v : g_macroAnalogCache)    v.store(0.0f, std::memory_order_relaxed);
+    for (auto& v : g_macroAnalogExpireMs) v.store(0ULL, std::memory_order_relaxed);
 
     uint32_t initIssues = BackendInitIssue_None;
 
@@ -708,8 +709,8 @@ bool Backend_Init()
     for (auto& d : g_uiDirty)   d.store(0, std::memory_order_relaxed);
     for (int i = 0; i < kMaxVirtualPads; ++i)
     {
-        g_lastSentValid[(size_t)i]   = 0;
-        g_lastSentTicks[(size_t)i]   = 0;
+        g_lastSentValid[(size_t)i] = 0;
+        g_lastSentTicks[(size_t)i] = 0;
         g_lastSentReports[(size_t)i] = XUSB_REPORT{};
     }
 
@@ -772,7 +773,7 @@ void Backend_Tick()
         uint16_t hid = g_trackedList[i];
         if (hid == 0 || hid >= 256) continue;
 
-        float raw      = ReadRaw01Cached(hid, cache);
+        float raw = ReadRaw01Cached(hid, cache);
         float filtered = ReadFiltered01Cached(hid, cache);
 
         int rawM = std::clamp((int)std::lround(raw * 1000.0f), 0, 1000);
@@ -781,7 +782,7 @@ void Backend_Tick()
         uint16_t newV = (uint16_t)std::clamp((int)std::lround(filtered * 1000.0f), 0, 1000);
         uint16_t oldV = g_uiAnalogM[hid].load(std::memory_order_relaxed);
         if (oldV != newV) {
-            int diff  = std::abs((int)newV - (int)oldV);
+            int diff = std::abs((int)newV - (int)oldV);
             bool edge = (oldV == 0 || newV == 0 || oldV == 1000 || newV == 1000);
             if (diff >= 2 || edge)
             {
@@ -801,7 +802,7 @@ void Backend_Tick()
             if (rawM > bestRawM) { bestRawM = rawM; bestHid = hid; }
         }
 
-        bool down    = (bestRawM >= 120);
+        bool down = (bestRawM >= 120);
         bool hadDown = g_bindHadDown.load(std::memory_order_relaxed);
         if (down && !hadDown && bestHid != 0)
         {
@@ -816,9 +817,11 @@ void Backend_Tick()
     }
 
     int logicalPads = std::clamp(g_virtualPadCount.load(std::memory_order_acquire), 1, kMaxVirtualPads);
+    const bool remapOn = g_remapEnabled.load(std::memory_order_acquire); // F1
     for (int pad = 0; pad < logicalPads; ++pad)
     {
-        XUSB_REPORT report = BuildReportForPad(pad, cache);
+        // F1: remap OFF → rapport vide
+        XUSB_REPORT report = remapOn ? BuildReportForPad(pad, cache) : XUSB_REPORT{};
         g_reports[(size_t)pad] = report;
         g_lastRX[(size_t)pad].store(report.sThumbRX, std::memory_order_release);
         g_lastSeq[(size_t)pad].fetch_add(1, std::memory_order_acq_rel);
@@ -843,7 +846,7 @@ void Backend_Tick()
             bool allOk = true;
             DWORD now = GetTickCount();
             constexpr DWORD kMinSendIntervalMs = 4;
-            constexpr DWORD kKeepAliveMs       = 250;
+            constexpr DWORD kKeepAliveMs = 250;
 
             for (int i = 0; i < g_connectedPadCount; ++i)
             {
@@ -853,19 +856,19 @@ void Backend_Tick()
                 int idx = std::clamp(i, 0, kMaxVirtualPads - 1);
                 const XUSB_REPORT& report = g_reports[(size_t)idx];
 
-                bool valid   = g_lastSentValid[(size_t)idx] != 0;
+                bool valid = g_lastSentValid[(size_t)idx] != 0;
                 bool changed = !valid || IsReportSignificantlyDifferent(report, g_lastSentReports[(size_t)idx]);
                 DWORD elapsed = now - g_lastSentTicks[(size_t)idx];
 
                 if (!changed && elapsed < kKeepAliveMs)      continue;
-                if ( changed && elapsed < kMinSendIntervalMs) continue;
+                if (changed && elapsed < kMinSendIntervalMs) continue;
 
                 err = vigem_target_x360_update(g_client, pad, report);
                 if (!VIGEM_SUCCESS(err)) { allOk = false; break; }
 
                 g_lastSentReports[(size_t)idx] = report;
-                g_lastSentTicks[(size_t)idx]   = now;
-                g_lastSentValid[(size_t)idx]   = 1;
+                g_lastSentTicks[(size_t)idx] = now;
+                g_lastSentValid[(size_t)idx] = 1;
             }
 
             if (!allOk)
@@ -989,7 +992,7 @@ bool BackendUI_ConsumeBindCapture(uint16_t* outHid, uint16_t* outRawMilli)
 {
     uint32_t p = g_bindCapturedPacked.exchange(0, std::memory_order_acq_rel);
     if (!p) return false;
-    if (outHid)      *outHid      = (uint16_t)(p & 0xFFFFu);
+    if (outHid)      *outHid = (uint16_t)(p & 0xFFFFu);
     if (outRawMilli) *outRawMilli = (uint16_t)((p >> 16) & 0xFFFFu);
     return true;
 }
@@ -1003,7 +1006,7 @@ uint64_t BackendUI_ConsumeDirtyChunk(int chunk)
 BackendStatus Backend_GetStatus()
 {
     BackendStatus s;
-    s.vigemOk        = g_vigemOk.load(std::memory_order_acquire);
+    s.vigemOk = g_vigemOk.load(std::memory_order_acquire);
     s.lastVigemError = g_vigemLastErr.load(std::memory_order_acquire);
     return s;
 }
@@ -1024,7 +1027,7 @@ void Backend_SetVirtualGamepadCount(int count)
         g_reconnectRequested.store(true, std::memory_order_release);
 }
 
-int  Backend_GetVirtualGamepadCount()   { return g_virtualPadCount.load(std::memory_order_acquire); }
+int  Backend_GetVirtualGamepadCount() { return g_virtualPadCount.load(std::memory_order_acquire); }
 
 void Backend_SetVirtualGamepadsEnabled(bool on)
 {
@@ -1033,4 +1036,27 @@ void Backend_SetVirtualGamepadsEnabled(bool on)
 }
 
 bool Backend_GetVirtualGamepadsEnabled() { return g_virtualPadsEnabled.load(std::memory_order_acquire); }
-uint32_t Backend_GetLastInitIssues()     { return g_lastInitIssues.load(std::memory_order_acquire); }
+uint32_t Backend_GetLastInitIssues() { return g_lastInitIssues.load(std::memory_order_acquire); }
+
+// ─────────────────────────────────────────────────────────────
+// F1 : Remap Toggle
+// ─────────────────────────────────────────────────────────────
+void Backend_SetRemapEnabled(bool enabled)
+{
+    g_remapEnabled.store(enabled, std::memory_order_release);
+}
+
+bool Backend_GetRemapEnabled()
+{
+    return g_remapEnabled.load(std::memory_order_acquire);
+}
+
+bool Backend_ToggleRemap()
+{
+    bool expected = true;
+    if (g_remapEnabled.compare_exchange_strong(
+        expected, false, std::memory_order_acq_rel, std::memory_order_acquire))
+        return false; // était ON → maintenant OFF
+    g_remapEnabled.store(true, std::memory_order_release);
+    return true;     // était OFF → maintenant ON
+}

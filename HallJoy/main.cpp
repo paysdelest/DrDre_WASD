@@ -140,12 +140,12 @@ static void EnsureLanternPngReady(HINSTANCE hInst)
 {
     const std::wstring assetsDir = WinUtil_BuildPathNearExe(L"assets");
     CreateDirectoryW(assetsDir.c_str(), nullptr);
-    const std::wstring p24 = assetsDir + L"\\watchman_lantern_26.png";
+    const std::wstring p24 = assetsDir + L"\\watchman_lantern_46.png";
     if (!FileExistsNoDir(p24)) {
-        if (ExtractResourceToFile(hInst, IDR_LANTERN_26_PNG, p24))
-            Logger::Info("LANTERN_PNG", "watchman_lantern_26.png extrait OK -> assets/");
+        if (ExtractResourceToFile(hInst, IDR_LANTERN_46_PNG, p24))
+            Logger::Info("LANTERN_PNG", "watchman_lantern_46.png extrait OK -> assets/");
         else
-            Logger::Warn("LANTERN_PNG", "Echec extraction lantern_24");
+            Logger::Warn("LANTERN_PNG", "Echec extraction lantern_46");
     }
 }
 
@@ -156,12 +156,12 @@ static void EnsureKimonoPngReady(HINSTANCE hInst)
 {
     const std::wstring assetsDir = WinUtil_BuildPathNearExe(L"assets");
     CreateDirectoryW(assetsDir.c_str(), nullptr);
-    const std::wstring p = assetsDir + L"\\combo_28.png";
+    const std::wstring p = assetsDir + L"\\combo_34.png";
     if (!FileExistsNoDir(p)) {
         if (ExtractResourceToFile(hInst, IDR_COMBO_PNG, p))
-            Logger::Info("COMBO_PNG", "combo_28.png extrait OK -> assets/");
+            Logger::Info("COMBO_PNG", "combo_34.png extrait OK -> assets/");
         else
-            Logger::Warn("COMBO_PNG", "Echec extraction combo_28");
+            Logger::Warn("COMBO_PNG", "Echec extraction combo_34");
     }
 }
 

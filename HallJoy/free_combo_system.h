@@ -46,8 +46,9 @@ struct FreeTrigger
     FreeTriggerModifier modifier = FreeTriggerModifier::None;
     FreeTriggerKeyType  keyType  = FreeTriggerKeyType::None;
     WORD                vkCode   = 0;   // For Keyboard: Windows VK code
-    FreeTriggerKeyType  holdKeyType = FreeTriggerKeyType::None; // Optional held button/key
-    WORD                holdVkCode  = 0; // For holdKeyType == Keyboard
+    FreeTriggerKeyType  holdKeyType  = FreeTriggerKeyType::None; // Optional held button/key
+    WORD                holdVkCode   = 0;    // For holdKeyType == Keyboard
+    bool                keyTypeIsHold = false; // true = keyType doit aussi être maintenu (hold+hold)
     
     bool IsValid() const { return keyType != FreeTriggerKeyType::None; }
     std::wstring ToString() const;      // Ex: "Ctrl + F" or "Shift + Left click"
@@ -66,6 +67,14 @@ struct FreeCombo
     bool                    isExample       = false; // Marked as first-run example
     uint32_t                repeatCount     = 0;     // 0 = infinite (while held), N = run exactly N times
     bool                    cancelOnRelease = false; // Stop sequence if trigger released mid-run
+
+    // ── Long Press (F2) ─────────────────────────────────────
+    bool     longPressEnabled  = false;  // déclencher seulement sur appui long
+    uint32_t longPressMs       = 500;    // durée minimale en ms
+    // State interne — non sérialisé
+    DWORD    _lpPressStartTime = 0;
+    bool     _lpWaiting        = false;
+    bool     _lpFired          = false;
 };
 
 // Free combo management system
@@ -94,6 +103,8 @@ namespace FreeComboSystem
     // Options
     bool SetEnabled(int id, bool enabled);
     bool SwapCombos(int idA, int idB); // swap two combos in the internal list (for drag & drop reorder)
+    // Déplace le combo à l'index srcIdx vers dstIdx (déplacement direct, sans swaps successifs)
+    bool MoveCombo(int srcIdx, int dstIdx);
     bool SetRepeat(int id, bool repeat, uint32_t delayMs);
     bool SetRepeatCount(int id, uint32_t count);
     bool SetCancelOnRelease(int id, bool cancel);

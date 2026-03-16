@@ -132,6 +132,7 @@ static int FC_GetContentHeight(HWND hWnd)
         + Sc(hWnd, 18)          // OPTIONS label
         + Sc(hWnd, 26)          // checkboxes
         + Sc(hWnd, 24)          // Run N times row (edit + cancel)
+        + Sc(hWnd, 24)          // Long press row
         + Sc(hWnd, 4)
         + Sc(hWnd, 24)          // delay edit
         + Sc(hWnd, 4)
@@ -195,12 +196,19 @@ static RECT FC_GetScrollThumb(HWND hWnd)
 static void FC_OffsetChildren(HWND hWnd, int dy)
 {
     if (dy == 0) return;
+    // Seuil X : colonne droite commence après la colonne gauche (lw=220 + marges)
+    // On ne déplace QUE les contrôles de la colonne droite (rx ≈ Sc(hWnd, 242))
+    const int rxMin = Sc(hWnd, 220); // tout contrôle à gauche de cette limite = colonne gauche
     int count = 0;
-    for (HWND c = GetWindow(hWnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) ++count;
+    for (HWND c = GetWindow(hWnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+        RECT rc{}; GetWindowRect(c, &rc); MapWindowPoints(nullptr, hWnd, (LPPOINT)&rc, 2);
+        if (rc.left >= rxMin) ++count;
+    }
     if (!count) return;
     HDWP hdwp = BeginDeferWindowPos(count);
     for (HWND c = GetWindow(hWnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
         RECT rc{}; GetWindowRect(c, &rc); MapWindowPoints(nullptr, hWnd, (LPPOINT)&rc, 2);
+        if (rc.left < rxMin) continue; // colonne gauche : ne pas toucher
         if (hdwp) hdwp = DeferWindowPos(hdwp, c, nullptr, rc.left, rc.top + dy, 0, 0,
             SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
         else SetWindowPos(c, nullptr, rc.left, rc.top + dy, 0, 0,
@@ -252,10 +260,12 @@ static HWND g_hEditName = nullptr;
 static HWND g_hLblTrigger = nullptr;
 static HWND g_hBtnCapture = nullptr;
 // Options card
-static HWND g_hChkEnabled = nullptr;
-static HWND g_hChkRepeat = nullptr;
-static HWND g_hChkCancelRel = nullptr;  // Cancel on release
+static HWND g_hChkEnabled      = nullptr;
+static HWND g_hChkRepeat       = nullptr;
+static HWND g_hChkCancelRel    = nullptr;  // Cancel on release
 static HWND g_hEditRepeatCount = nullptr;  // Run N times (0=inf)
+static HWND g_hChkLongPress    = nullptr;  // Long press enable
+static HWND g_hEditLongPressMs = nullptr;  // Long press duration (ms)
 static HWND g_hEditDelay = nullptr;
 static HWND g_hDelaySlider = nullptr;
 static HWND g_hDelayValue = nullptr;
@@ -273,8 +283,8 @@ static HWND g_hBtnSave = nullptr;
 
 // ── Whitelist UI ─────────────────────────────────────────────────────────────
 static HWND g_hWlModeCB = nullptr;
-static HWND g_hWlList = nullptr;
-static HWND g_hWlEdit = nullptr;
+static HWND g_hWlList   = nullptr;
+static HWND g_hWlEdit   = nullptr;
 static HWND g_hWlBtnAdd = nullptr;
 static HWND g_hWlBtnDel = nullptr;
 
@@ -287,29 +297,30 @@ static Gdiplus::Bitmap* g_comboBmp = nullptr;
 static bool g_delaySync = false;
 static bool g_capturing = false;
 static bool  g_capturingMouseAction = false;
-static DWORD g_captureGraceUntil = 0;
+static DWORD g_captureGraceUntil   = 0;
 static std::vector<int> g_comboIds;
 static int  g_selectedId = -1;
 
 // ── Drag & drop — combo list (left column) ───────────────────
-static bool  g_comboDrag = false;
-static int   g_comboDragSrcIdx = -1;   // list index being dragged
-static int   g_comboDragHover = -1;   // current drop target index
-static POINT g_comboDragPt = {};
+static bool  g_comboDrag        = false;
+static int   g_comboDragSrcIdx  = -1;   // list index being dragged
+static int   g_comboDragHover   = -1;   // current drop target index
+static POINT g_comboDragPt      = {};
+static int   g_comboDragStartY  = 0;    // Y client (page) au moment du mousedown
 
 // ── Drag & drop — action list (right column) ─────────────────
-static bool  g_actionDrag = false;
+static bool  g_actionDrag       = false;
 static int   g_actionDragSrcIdx = -1;
-static int   g_actionDragHover = -1;
-static POINT g_actionDragPt = {};
+static int   g_actionDragHover  = -1;
+static POINT g_actionDragPt     = {};
 
 // Width reserved for [x] button drawn inside each action row
 static constexpr int kActionDelW = 22; // px at 96dpi (scaled at runtime)
 
 // ── Subclass procs for detect clic/drag in listbox ──
 static WNDPROC g_origActionListProc = nullptr;
-static WNDPROC g_origComboListProc = nullptr;
-static HWND    g_hPageForSubclass = nullptr; // reference to the parent window -- référence à la fenêtre parente
+static WNDPROC g_origComboListProc  = nullptr;
+static HWND    g_hPageForSubclass   = nullptr; // reference to the parent window -- référence à la fenêtre parente
 
 static LRESULT CALLBACK ActionListSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static LRESULT CALLBACK ComboListSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -339,7 +350,7 @@ static HFONT MakeFont(HWND h, int ptSize, int weight)
         CLEARTYPE_QUALITY, VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
 }
 static HFONT GetFont(HWND h) { static HFONT f = nullptr; if (!f) f = MakeFont(h, 9, FW_NORMAL);   return f; }
-static HFONT GetBold(HWND h) { static HFONT f = nullptr; if (!f) f = MakeFont(h, 9, FW_SEMIBOLD); return f; }
+static HFONT GetBold(HWND h)  { static HFONT f = nullptr; if (!f) f = MakeFont(h, 9, FW_SEMIBOLD); return f; }
 static HFONT GetSmall(HWND h) { static HFONT f = nullptr; if (!f) f = MakeFont(h, 8, FW_NORMAL);   return f; }
 static HFONT GetEmoji(HWND h) {
     static HFONT f = nullptr;
@@ -715,7 +726,7 @@ static void DrawActionItem(const DRAWITEMSTRUCT* dis)
         int bw = kActionDelW - 2;
         int bh = rc.bottom - rc.top - 4;
         int by = rc.top + 2;
-        COLORREF xBg = sel ? RGB(180, 50, 50) : RGB(140, 40, 40);
+        COLORREF xBg  = sel ? RGB(180, 50, 50) : RGB(140, 40, 40);
         COLORREF xBrd = sel ? RGB(220, 80, 80) : RGB(180, 60, 60);
         HBRUSH xBr = CreateSolidBrush(xBg);
         HPEN   xPn = CreatePen(PS_SOLID, 1, xBrd);
@@ -724,7 +735,7 @@ static void DrawActionItem(const DRAWITEMSTRUCT* dis)
         RoundRect(hdc, bx, by, bx + bw, by + bh, 3, 3);
         SelectObject(hdc, ob2); SelectObject(hdc, op2);
         DeleteObject(xBr); DeleteObject(xPn);
-        HFONT smF = GetSmall(dis->hwndItem);
+        HFONT smF  = GetSmall(dis->hwndItem);
         HFONT oldF2 = (HFONT)SelectObject(hdc, smF);
         SetTextColor(hdc, RGB(255, 200, 200));
         SetBkMode(hdc, TRANSPARENT);
@@ -888,28 +899,40 @@ static void PaintPage(HWND hWnd, HDC hdc)
         MoveToEx(hdc, sx, Sc(hWnd, 8), nullptr);
         LineTo(hdc, sx, rc.bottom - Sc(hWnd, 8));
         SelectObject(hdc, op); DeleteObject(sp);
-        //} suppress
-
-        //Ajout --->
-        // ── Emergency hint (under Save combo) ─────────────────────
-        DrawEmergencyHintUnderSave(hWnd, hdc);
+    //} suppress
+    
+    //Ajout --->
+    // ── Emergency hint (under Save combo) ─────────────────────
+    DrawEmergencyHintUnderSave(hWnd, hdc);
     }//Ajout<--
 
     // ── Label Left column — 🥋 My combos ─────────────────────────────────────
     {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, UiTheme::Color_Text());
+        
+        const int labelTop = Sc(hWnd, 3);  //  ↕ distance from the top of the window - ↕ distance depuis le haut de la fenêtre
+        //  ↑ increase = the entire block descends / ↓ = ascends - ↑ augmenter = tout le bloc descend / ↓ = monte
+        // ⚠️ Pass on to WM_SIZE: const int ly = Sc(hWnd,3) + Sc(hWnd,34) + ... - ⚠️ répercuter dans WM_SIZE : const int ly = Sc(hWnd,3) + Sc(hWnd,34) + ...
 
-        const int labelTop = Sc(hWnd, 3);
-        const int labelH = Sc(hWnd, 34);  // 34px — loger imgSz=28 sans clipping
-        const int imgSz = Sc(hWnd, 28);
-        const int imgX = Sc(hWnd, 6);
-        const int imgY = labelTop + (labelH - imgSz) / 2;
+        const int labelH = Sc(hWnd, 38);   // ↕ height of the ‘My combos’ title area - ↕ hauteur de la zone titre "My combos"
+        // ↑ = more vertical space / ↓ = more compact - ↑ = plus d'espace vertical / ↓ = plus compact
+        // ⚠️ Pass on to WM_SIZE: Sc(hWnd, 34) in ly -⚠️ répercuter dans WM_SIZE : le Sc(hWnd, 34) dans ly
+
+        const int imgSz = Sc(hWnd, 34);    // icon size in pixels — ↑ = larger / ↓ = smaller - taille icône en pixels — ↑ = plus grande / ↓ = plus petite
+        // ⚠️ Also change the name of the png file below to match. - ⚠️ change aussi le nom du fichier png ci-dessous pour correspondre
+
+        const int imgX = Sc(hWnd, 8);      // ← → horizontal position icon - ← → position horizontale icône karateka
+        // ↑ increase = move right / ↓ decrease = move left - ↑ augmenter = décale à droite / ↓ diminuer = décale à gauche
+        // Sc(hWnd, 0) = stuck to the left edge of the window - collé au bord gauche de la fenêtre
+
+        const int imgY = labelTop + (labelH - imgSz) / 2; // ↕ vertical position icon karateka
+        // /1 = bas / /2 = centré / /4 = haut
 
 
         // Icône combo PNG (lazy load depuis assets\combo_24.png)
         if (!g_comboBmp) {
-            std::wstring path = WinUtil_BuildPathNearExe(L"assets\\combo_28.png");
+            std::wstring path = WinUtil_BuildPathNearExe(L"assets\\combo_34.png");
             Gdiplus::Bitmap* b = Gdiplus::Bitmap::FromFile(path.c_str(), FALSE);
             if (b && b->GetLastStatus() == Gdiplus::Ok) g_comboBmp = b;
             else if (b) delete b;
@@ -922,9 +945,18 @@ static void PaintPage(HWND hWnd, HDC hdc)
             g.DrawImage(g_comboBmp, imgX, imgY, imgSz, imgSz);
         }
 
-        // Texte "My combos" — police bold, décalé après l'icône, centré verticalement
-        HFONT oldF = (HFONT)SelectObject(hdc, GetBold(hWnd));
-        RECT lr{ imgX + imgSz + Sc(hWnd, 4), labelTop, Sc(hWnd, 230), labelTop + labelH };
+        HFONT oldF = (HFONT)SelectObject(hdc, GetBold(hWnd)); // title font ‘My combos’ — GetBold = bold / GetFont = normal - police titre "My combos" — GetBold = gras / GetFont = normal
+        RECT lr{ imgX + imgSz + Sc(hWnd, 13), // ← left edge title ‘My combos’ ← bord gauche titre "My combos"
+            // imgX + imgSz = juste après l'icône karateka
+            // + Sc(hWnd, 4) = espace entre icône et titre
+            // ↑ augmenter le 4 = titre plus à droite / ↓ = plus à gauche
+                        // imgX + imgSz = just after the karateka icon
+            // + Sc(hWnd, 4) = space between icon and title
+            // ↑ increase the 4 = title further to the right / ↓ = further to the left
+labelTop,                    //↕ top edge title - ↕ bord haut titre
+Sc(hWnd, 230),              // → Maximum width of the title ‘My combos’ - → largeur max du titre "My combos"
+// ↑ increase = title can extend further to the right - ↑ augmenter = titre peut s'étendre plus loin à droite
+labelTop + labelH };         // ↕ bottom edge title - ↕ bord bas titre
         DrawTextW(hdc, L"My combos", -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         SelectObject(hdc, oldF);
     }
@@ -967,30 +999,30 @@ static void PaintPage(HWND hWnd, HDC hdc)
             FillRoundRect(hdc, card, Sc(hWnd, 7), Pal::CardBg, Pal::CardBorder);
             DrawCardLabel(hdc, hWnd, card, L"OPTIONS");
 
-            // Field labels inside OPTIONS (drawn here instead of STATIC controls)
-            {
-                HFONT oldF = (HFONT)SelectObject(hdc, GetSmall(hWnd));
-                SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, UiTheme::Color_TextMuted());
+        // Field labels inside OPTIONS (drawn here instead of STATIC controls)
+        {
+            HFONT oldF = (HFONT)SelectObject(hdc, GetSmall(hWnd));
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, UiTheme::Color_TextMuted());
 
-                // "Run N times (0=inf):"
-                if (g_hEditRepeatCount && IsWindow(g_hEditRepeatCount)) {
-                    RECT er{}; GetWindowRect(g_hEditRepeatCount, &er);
-                    MapWindowPoints(nullptr, hWnd, (LPPOINT)&er, 2);
-                    RECT lr{ card.left + Sc(hWnd, 10), er.top, er.left - Sc(hWnd, 6), er.bottom };
-                    DrawTextW(hdc, L"Run N times (0=inf):", -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-                }
-
-                // "Repeat delay:"
-                if (g_hEditDelay && IsWindow(g_hEditDelay)) {
-                    RECT ed{}; GetWindowRect(g_hEditDelay, &ed);
-                    MapWindowPoints(nullptr, hWnd, (LPPOINT)&ed, 2);
-                    RECT lr{ card.left + Sc(hWnd, 10), ed.top, ed.left - Sc(hWnd, 6), ed.bottom };
-                    DrawTextW(hdc, L"Repeat delay:", -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-                }
-
-                SelectObject(hdc, oldF);
+            // "Run N times (0=inf):"
+            if (g_hEditRepeatCount && IsWindow(g_hEditRepeatCount)) {
+                RECT er{}; GetWindowRect(g_hEditRepeatCount, &er);
+                MapWindowPoints(nullptr, hWnd, (LPPOINT)&er, 2);
+                RECT lr{ card.left + Sc(hWnd, 10), er.top, er.left - Sc(hWnd, 6), er.bottom };
+                DrawTextW(hdc, L"Run N times (0=inf):", -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             }
+
+            // "Repeat delay:"
+            if (g_hEditDelay && IsWindow(g_hEditDelay)) {
+                RECT ed{}; GetWindowRect(g_hEditDelay, &ed);
+                MapWindowPoints(nullptr, hWnd, (LPPOINT)&ed, 2);
+                RECT lr{ card.left + Sc(hWnd, 10), ed.top, ed.left - Sc(hWnd, 6), ed.bottom };
+                DrawTextW(hdc, L"Repeat delay:", -1, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+
+            SelectObject(hdc, oldF);
+        }
         }
     }
 
@@ -1010,27 +1042,57 @@ static void PaintPage(HWND hWnd, HDC hdc)
         MapWindowPoints(nullptr, hWnd, (LPPOINT)&wr, 2);
 
         // Zone du label : 36px au-dessus du dropdown
-        int labelH = Sc(hWnd, 36);
+        int labelH   = Sc(hWnd, 36);
         int labelTop = wr.top - labelH;
         int labelBot = wr.top;
-        int labelL = wr.left;
-        int labelR = wr.right;
+        int labelL   = wr.left;
+        int labelR   = wr.right;
 
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, UiTheme::Color_Text());
 
         // Chargement lazy de la lanterne
         if (!g_lanternBmp) {
-            std::wstring path = WinUtil_BuildPathNearExe(L"assets\\watchman_lantern_26.png");
+            std::wstring path = WinUtil_BuildPathNearExe(L"assets\\watchman_lantern_46.png");
             Gdiplus::Bitmap* b = Gdiplus::Bitmap::FromFile(path.c_str(), FALSE);
             if (b && b->GetLastStatus() == Gdiplus::Ok) g_lanternBmp = b;
             else if (b) delete b;
         }
 
-        // Lanterne PNG — alignée à GAUCHE du label (même style que combo), centrée verticalement
-        int imgSz = Sc(hWnd, 24);
-        int imgX = labelL + Sc(hWnd, 6);
-        int imgY = labelTop + (labelH - imgSz) / 2 - Sc(hWnd, 1);
+        //int imgSz = Sc(hWnd, 26); // <-- original
+        int imgSz = Sc(hWnd, 46);          // lantern icon size in pixels — ↑ = larger / ↓ = smaller - taille icône lanterne en pixels — ↑ = plus grande / ↓ = plus petite
+
+        //int imgX = labelL - Sc(hWnd, 3);   // ← → horizontal position of lantern icon <-- original - ← → position horizontale icône lanterne <-- original 
+        // ⚠️ also change the name of the png file above to match    
+        // ⚠️ change aussi le nom du fichier png ci-dessus pour correspondre
+
+
+        int imgX = labelL - Sc(hWnd, 13);   // horizontal position of lantern icon ← → position horizontale icône lanterne
+
+        // labelL = bord gauche du panneau déroulant
+        // - Sc(hWnd, 3) = légèrement à GAUCHE du panneau déroulant
+        // augmenter le 3 = plus à gauche
+        // remplacer - par + = décale à droite
+        // + Sc(hWnd, 0) = aligné exactement sur le bord gauche
+
+        // labelL = left edge of drop-down panel
+        // - Sc(hWnd, 3) = slightly to the LEFT of the drop-down panel
+        // increase the 3 = further to the left
+        // replace - with + = shifts to the right
+        // + Sc(hWnd, 0) = aligned exactly with the left edge
+
+
+
+        //int imgY = labelTop + (labelH - imgSz) / 5 - Sc(hWnd, 1); // <-- original 
+        int imgY = labelTop + (labelH - imgSz) / 4 - Sc(hWnd, 1); // ↕ vertical position of lantern icon ↕ position verticale icône lanterne
+        // Icône plus basse :↑ augmenter /N → /9, /15..., Icône plus haute: diminuer /N → /4, /2, /1
+        // - Sc(hWnd, 1) = micro-ajustement vers le haut, changer ou mettre 0
+        // Micro-ajustement bas- Sc(hWnd, valeur négative) ex: - Sc(hWnd, -4)Micro-ajustement haut- Sc(hWnd, valeur positive) ex: - Sc(hWnd, 4)
+
+        // Lower icon:↑ increase /N → /9, /15..., Higher icon: decrease /N → /4, /2, /1
+        // - Sc(hWnd, 1) = micro-adjustment upwards, change or set to 0
+        // Micro-adjustment down - Sc(hWnd, negative value) e.g.: - Sc(hWnd, -4) Micro-adjustment up - Sc(hWnd, positive value) e.g.: - 
+
 
         if (g_lanternBmp) {
             Gdiplus::Graphics g(hdc);
@@ -1038,8 +1100,8 @@ static void PaintPage(HWND hWnd, HDC hdc)
             g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
             g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
             g.DrawImage(g_lanternBmp,
-                imgX, imgY,
-                imgSz, imgSz);
+                        imgX, imgY,
+                        imgSz, imgSz);
         }
 
         // Texte "WATCHMAN" bold — décalé après la lanterne, centré verticalement
@@ -1060,7 +1122,7 @@ static void PaintPage(HWND hWnd, HDC hdc)
         SelectObject(hdc, oldF);
     }
 
-    // ── "Type / Value" label section actions ─────────────────────
+// ── "Type / Value" label section actions ─────────────────────
     if (g_hActionKeyEdt && IsWindow(g_hActionKeyEdt)) {
         RECT r{}; GetWindowRect(g_hActionKeyEdt, &r); MapWindowPoints(nullptr, hWnd, (LPPOINT)&r, 2);
         HFONT oldF = (HFONT)SelectObject(hdc, GetSmall(hWnd));
@@ -1102,11 +1164,15 @@ static void UpdateControlsEnabled()
     auto En = [&](HWND h) { if (h && IsWindow(h)) EnableWindow(h, has); };
     En(g_hEditName);    En(g_hLblTrigger);
     En(g_hBtnCapture);  En(g_hChkEnabled); En(g_hChkRepeat);
-    if (g_hChkCancelRel)    EnableWindow(g_hChkCancelRel, has);
+    if (g_hChkCancelRel)    EnableWindow(g_hChkCancelRel,    has);
     if (g_hEditRepeatCount) EnableWindow(g_hEditRepeatCount, has);
     En(g_hEditDelay);   En(g_hDelaySlider); En(g_hDelayValue);
-    if (g_hChkCancelRel)    EnableWindow(g_hChkCancelRel, has);
+    if (g_hChkCancelRel)    EnableWindow(g_hChkCancelRel,    has);
     if (g_hEditRepeatCount) EnableWindow(g_hEditRepeatCount, has);
+    if (g_hChkLongPress)    EnableWindow(g_hChkLongPress, has);
+    if (g_hEditLongPressMs) EnableWindow(g_hEditLongPressMs,
+        has && g_hChkLongPress &&
+        SendMessageW(g_hChkLongPress, BM_GETCHECK, 0, 0) == BST_CHECKED);
     En(g_hActionList);  En(g_hActionTypeCB); En(g_hActionKeyEdt);
     En(g_hBtnAdd);      En(g_hBtnAddDelay);  En(g_hBtnDelAct);
     En(g_hBtnUp);       En(g_hBtnDown);      En(g_hBtnSave);
@@ -1129,6 +1195,13 @@ static void LoadComboToUI()
     SetDelayUi((int)c->repeatDelayMs);
     if (g_hChkCancelRel)    CHK_SET(g_hChkCancelRel, c->cancelOnRelease);
     if (g_hEditRepeatCount) SetWindowTextInt(g_hEditRepeatCount, (int)c->repeatCount);
+    if (g_hChkLongPress) {
+        CHK_SET(g_hChkLongPress, c->longPressEnabled);
+        if (g_hEditLongPressMs) {
+            SetWindowTextInt(g_hEditLongPressMs, (int)c->longPressMs);
+            EnableWindow(g_hEditLongPressMs, c->longPressEnabled);
+        }
+    }
     RefreshTriggerLabel();
     RefreshActionList();
     UpdateControlsEnabled();
@@ -1210,14 +1283,15 @@ namespace FreeComboUI
             wchar_t buf[128] = {};
             GetWindowTextW(g_hWlEdit, buf, 128);
             std::wstring s(buf);
-            while (!s.empty() && (s.front() == L' ' || s.front() == L'	')) s.erase(s.begin());
-            while (!s.empty() && (s.back() == L' ' || s.back() == L'	')) s.pop_back();
+            while (!s.empty() && (s.front()==L' '||s.front()==L'	')) s.erase(s.begin());
+            while (!s.empty() && (s.back()==L' '||s.back()==L'	')) s.pop_back();
             if (!s.empty()) {
-                if (s.size() < 4 || _wcsicmp(s.c_str() + s.size() - 4, L".exe") != 0)
+                if (s.size() < 4 || _wcsicmp(s.c_str()+s.size()-4, L".exe") != 0)
                     s += L".exe";
                 FreeComboSystem::AddToWhitelist(s);
                 if (g_hWlList) SendMessageW(g_hWlList, LB_ADDSTRING, 0, (LPARAM)s.c_str());
                 SetWindowTextW(g_hWlEdit, L"");
+                PersistToDisk();
             }
             break;
         }
@@ -1230,6 +1304,7 @@ namespace FreeComboUI
                 SendMessageW(g_hWlList, LB_GETTEXT, idx, (LPARAM)buf);
                 FreeComboSystem::RemoveFromWhitelist(std::wstring(buf));
                 SendMessageW(g_hWlList, LB_DELETESTRING, idx, 0);
+                PersistToDisk();
             }
             break;
         }
@@ -1256,6 +1331,9 @@ namespace FreeComboUI
             c->enabled = CHK_GET(g_hChkEnabled);
             c->repeatDelayMs = (uint32_t)ClampDelay(GetWindowTextInt(g_hEditDelay));
             if (g_hChkCancelRel)    c->cancelOnRelease = CHK_GET(g_hChkCancelRel);
+            if (g_hChkLongPress)    c->longPressEnabled = CHK_GET(g_hChkLongPress);
+            if (g_hEditLongPressMs) c->longPressMs =
+                (uint32_t)std::clamp(GetWindowTextInt(g_hEditLongPressMs), 50, 5000);
             if (g_hEditRepeatCount) {
                 int rc = GetWindowTextInt(g_hEditRepeatCount);
                 c->repeatCount = (rc >= 0 && rc <= 9999) ? (uint32_t)rc : 0;
@@ -1389,6 +1467,25 @@ namespace FreeComboUI
                     PersistToDisk();
                 }
             break;
+        case ID_CHK_LONG_PRESS:
+            if (notif == BN_CLICKED) {
+                bool on = g_hChkLongPress &&
+                    SendMessageW(g_hChkLongPress, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                if (g_hEditLongPressMs) EnableWindow(g_hEditLongPressMs, on);
+                if (g_selectedId >= 0)
+                    if (FreeCombo* c = FreeComboSystem::GetCombo(g_selectedId)) {
+                        c->longPressEnabled = on; PersistToDisk();
+                    }
+            }
+            break;
+        case ID_EDIT_LONG_PRESS_MS:
+            if (notif == EN_KILLFOCUS && g_selectedId >= 0)
+                if (FreeCombo* c = FreeComboSystem::GetCombo(g_selectedId)) {
+                    int ms = GetWindowTextInt(g_hEditLongPressMs);
+                    c->longPressMs = (uint32_t)std::clamp(ms, 50, 5000);
+                    PersistToDisk();
+                }
+            break;
         } // switch
     }
 
@@ -1433,7 +1530,11 @@ namespace FreeComboUI
         const int pad = 10;
         const int lw = 220;  // left column width
         const int lx = pad;
-        const int ly = 40;   // list start — labelTop(3) + labelH(34) + gap(3)
+        // Keep the left list aligned with the painted "My combos" header block.
+        const int myCombosLabelTop = 3;
+        const int myCombosLabelH = 38;
+        const int myCombosGap = 6;
+        const int ly = myCombosLabelTop + myCombosLabelH + myCombosGap;
         const int listH = 252;  // initial list height
         const int btnH = 26;
         const int rx = lw + pad * 2 + 2;   // right column start
@@ -1463,32 +1564,36 @@ namespace FreeComboUI
         // ── Whitelist panel (colonne gauche, sous New/Delete) ────────────────────
         {
             int wy = btnY + btnH + 12;
+
             g_hWlModeCB = CreateWindowExW(0, L"COMBOBOX", L"",
                 WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
                 lx, wy, lw, 200, g_hPage, (HMENU)ID_WL_MODE_CB, hInst, nullptr);
             SendMessageW(g_hWlModeCB, CB_ADDSTRING, 0, (LPARAM)L"OFF  -  Inject everywhere");
             SendMessageW(g_hWlModeCB, CB_ADDSTRING, 0, (LPARAM)L"WHITELIST  -  Allowed apps only");
-            SendMessageW(g_hWlModeCB, CB_SETCURSEL, FreeComboSystem::GetWhitelistMode(), 0); // ← modifié
+            SendMessageW(g_hWlModeCB, CB_SETCURSEL, 0, 0);
             UiTheme::ApplyToControl(g_hWlModeCB);
             if (HFONT f = GetFont(g_hPage))
                 SendMessageW(g_hWlModeCB, WM_SETFONT, (WPARAM)f, FALSE);
             wy += rowH + 4;
+
             g_hWlList = CreateWindowExW(0, L"LISTBOX", L"",
                 WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL,
                 lx, wy, lw, 60, g_hPage, (HMENU)ID_WL_LIST, hInst, nullptr);
             UiTheme::ApplyToControl(g_hWlList);
-            // ── Repeupler la ListBox depuis la whitelist sauvegardée ── // ← ajouté
+            // Repeupler la ListBox depuis la whitelist chargée depuis le .dat
             {
                 auto wl = FreeComboSystem::GetWhitelist();
                 for (const auto& entry : wl)
                     SendMessageW(g_hWlList, LB_ADDSTRING, 0, (LPARAM)entry.c_str());
             }
             wy += 64;
+
             int ebw = lw - 54;
             g_hWlEdit = CreateWindowExW(0, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                 lx, wy, ebw, rowH, g_hPage, (HMENU)ID_WL_EDIT, hInst, nullptr);
             UiTheme::ApplyToControl(g_hWlEdit);
+
             g_hWlBtnAdd = CreateWindowExW(0, L"BUTTON", L"+",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 lx + ebw + 2, wy, 24, rowH, g_hPage, (HMENU)ID_WL_BTN_ADD, hInst, nullptr);
@@ -1545,10 +1650,21 @@ namespace FreeComboUI
         }
         ry += 28;
 
+        // Long press row
+        {
+            g_hChkLongPress = CreateWindowExW(0, L"BUTTON", L"Hold delay (ms):",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                rx, ry, 140, 20, g_hPage, (HMENU)ID_CHK_LONG_PRESS, hInst, nullptr);
+            g_hEditLongPressMs = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"300",
+                WS_CHILD | WS_VISIBLE | ES_NUMBER,
+                rx + 144, ry, 52, rowH, g_hPage, (HMENU)ID_EDIT_LONG_PRESS_MS, hInst, nullptr);
+            EnableWindow(g_hEditLongPressMs, FALSE); // grisé par défaut
+        }
+
         // Ligne 3 : [Repeat delay: label] [edit 52px ms]
         {
             // (Label drawn in WM_PAINT) Repeat delay:
-            g_hEditDelay = CreateWindowExW(0, L"EDIT", L"400", WS_CHILD | WS_VISIBLE | ES_NUMBER,
+g_hEditDelay = CreateWindowExW(0, L"EDIT", L"400", WS_CHILD | WS_VISIBLE | ES_NUMBER,
                 rx + 146, ry, 52, rowH, g_hPage, (HMENU)ID_EDIT_DELAY, hInst, nullptr);
         }
         ry += 28;
@@ -1576,7 +1692,7 @@ namespace FreeComboUI
         ry += 106;
 
         // Action type (label drawn in WM_PAINT)
-        g_hActionTypeCB = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+g_hActionTypeCB = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
             rx + 48, ry, rw - 48, 300, g_hPage, (HMENU)ID_ACTION_TYPE_CB, hInst, nullptr);
         // Items added AFTER ApplyFontChildren below — WM_SETFONT on combobox clears items on some Win32 builds
         ry += rowH + 4;
@@ -1930,7 +2046,12 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         // ── Shared constants ──────────────────────────────────────────
         const int pad = Sc(hWnd, 10);
         const int lx = Sc(hWnd, 10);
-        const int ly = Sc(hWnd, 3) + Sc(hWnd, 34) + Sc(hWnd, 4);  // labelTop(3) + labelH(34) + gap(4) — DPI-aware
+        // Must match the values used in PaintPage() for the "My combos" header,
+        // otherwise the list panel climbs into the PNG/title area and visually clips it.
+        const int myCombosLabelTop = Sc(hWnd, 3);
+        const int myCombosLabelH = Sc(hWnd, 38);
+        const int myCombosGap = Sc(hWnd, 6);
+        const int ly = myCombosLabelTop + myCombosLabelH + myCombosGap;
         const int lw = Sc(hWnd, 220);
         const int btnH = Sc(hWnd, 26);
 
@@ -1986,7 +2107,13 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
         // Run N times + Cancel on release (FIX: was not positioned, could end up behind other controls)
         if (g_hEditRepeatCount) SetWindowPos(g_hEditRepeatCount, nullptr, rx + Sc(hWnd, 156), ry, Sc(hWnd, 44), rowH, SWP_NOZORDER);
-        if (g_hChkCancelRel)    SetWindowPos(g_hChkCancelRel, nullptr, rx + Sc(hWnd, 210), ry, Sc(hWnd, 180), Sc(hWnd, 20), SWP_NOZORDER);
+        if (g_hChkCancelRel)    SetWindowPos(g_hChkCancelRel,    nullptr, rx + Sc(hWnd, 210), ry, Sc(hWnd, 180), Sc(hWnd, 20), SWP_NOZORDER);
+        ry += rowH + Sc(hWnd, 4);
+        // Long press row
+        if (g_hChkLongPress)    SetWindowPos(g_hChkLongPress,    nullptr, rx,                 ry, Sc(hWnd, 140), Sc(hWnd, 20), SWP_NOZORDER);
+        if (g_hEditLongPressMs) SetWindowPos(g_hEditLongPressMs, nullptr, rx + Sc(hWnd, 144), ry, Sc(hWnd, 52),  rowH,         SWP_NOZORDER);
+        if (g_hEditLongPressMs) EnableWindow(g_hEditLongPressMs,
+            g_hChkLongPress && SendMessageW(g_hChkLongPress, BM_GETCHECK, 0, 0) == BST_CHECKED);
         ry += rowH + Sc(hWnd, 4);
 
         // Repeat delay edit
@@ -2038,7 +2165,7 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         {
             // wy = below the New/Delete buttons + space for the label "INJECTION GUARD" -- wy = sous les boutons New/Delete + espace pour le label "INJECTION GUARD"
             // WATCHMAN_LABEL_H = 36 — changer cette valeur pour ajuster hauteur label + espacement icône
-            int wy = bY + btnH + Sc(hWnd, 4);
+            int wy  = bY + btnH + Sc(hWnd, 4);
             int ebw = lw - Sc(hWnd, 56);
             wy += Sc(hWnd, 36);  // hauteur label WATCHMAN (inclut la lanterne 30px)
             if (g_hWlModeCB) SetWindowPos(g_hWlModeCB, nullptr, lx, wy, lw, Sc(hWnd, 26), SWP_NOZORDER);
@@ -2046,7 +2173,7 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             if (g_hWlList)   SetWindowPos(g_hWlList, nullptr, lx, wy, lw, Sc(hWnd, 60), SWP_NOZORDER);
             wy += Sc(hWnd, 60) + Sc(hWnd, 4);
             if (g_hWlEdit)   SetWindowPos(g_hWlEdit, nullptr, lx, wy, ebw, Sc(hWnd, 22), SWP_NOZORDER);
-            if (g_hWlBtnAdd) SetWindowPos(g_hWlBtnAdd, nullptr, lx + ebw + Sc(hWnd, 2), wy, Sc(hWnd, 24), Sc(hWnd, 22), SWP_NOZORDER);
+            if (g_hWlBtnAdd) SetWindowPos(g_hWlBtnAdd, nullptr, lx + ebw + Sc(hWnd, 2),  wy, Sc(hWnd, 24), Sc(hWnd, 22), SWP_NOZORDER);
             if (g_hWlBtnDel) SetWindowPos(g_hWlBtnDel, nullptr, lx + ebw + Sc(hWnd, 28), wy, Sc(hWnd, 24), Sc(hWnd, 22), SWP_NOZORDER);
         }
 
@@ -2124,13 +2251,24 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             return 0;
         }
         if (g_comboDrag && g_hComboList) {
-            POINT lpt = pt;
-            MapWindowPoints(hWnd, g_hComboList, &lpt, 1);
-            int itemH = (int)SendMessageW(g_hComboList, LB_GETITEMHEIGHT, 0, 0);
-            if (itemH <= 0) itemH = 28;
-            int idx2 = (int)SendMessageW(g_hComboList, LB_GETTOPINDEX, 0, 0) + lpt.y / itemH;
             int cnt2 = (int)SendMessageW(g_hComboList, LB_GETCOUNT, 0, 0);
-            idx2 = std::max(0, std::min(idx2, cnt2 - 1));
+            if (cnt2 <= 0) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return 0; }
+
+            int itemH = (int)SendMessageW(g_hComboList, LB_GETITEMHEIGHT, 0, 0);
+            if (itemH <= 0) itemH = 42;
+
+            // ── Calculer idx2 depuis le déplacement Y depuis le point de départ ──
+            // Approche robuste : on part de g_comboDragSrcIdx et on ajoute
+            // le nombre d'items parcourus depuis le Y initial du drag.
+            // Cela fonctionne indépendamment du scroll de la ListBox.
+            int deltaY   = pt.y - g_comboDragStartY;
+            int deltaIdx = deltaY / itemH;   // peut être négatif (drag vers le haut)
+            int idx2     = std::max(0, std::min(g_comboDragSrcIdx + deltaIdx, cnt2 - 1));
+
+            // ── Auto-scroll de la ListBox pour suivre le curseur ──────
+            // Forcer la ListBox à montrer l'item cible
+            SendMessageW(g_hComboList, LB_SETTOPINDEX, (WPARAM)std::max(0, idx2 - 1), 0);
+
             if (idx2 != g_comboDragHover) {
                 g_comboDragHover = idx2;
                 InvalidateRect(g_hComboList, nullptr, FALSE);
@@ -2153,7 +2291,7 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             int dst = g_actionDragHover;
             g_actionDrag = false;
             g_actionDragSrcIdx = -1;
-            g_actionDragHover = -1;
+            g_actionDragHover  = -1;
             ReleaseCapture();
             if (src >= 0 && dst >= 0 && src != dst && g_selectedId >= 0) {
                 // Move action from src to dst by successive swaps
@@ -2177,22 +2315,21 @@ static LRESULT CALLBACK FreeComboPageProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             int dst = g_comboDragHover;
             g_comboDrag = false;
             g_comboDragSrcIdx = -1;
-            g_comboDragHover = -1;
+            g_comboDragHover  = -1;
             ReleaseCapture();
             if (src >= 0 && dst >= 0 && src != dst
                 && src < (int)g_comboIds.size() && dst < (int)g_comboIds.size()) {
-                // Swap IDs in g_comboIds then persist via SaveToFile
-                // We move src toward dst step by step (reflects visual order)
-                int step = (src < dst) ? 1 : -1;
-                for (int i = src; i != dst; i += step) {
-                    int idA = g_comboIds[(size_t)i];
-                    int idB = g_comboIds[(size_t)(i + step)];
-                    FreeComboSystem::SwapCombos(idA, idB);
-                    std::swap(g_comboIds[(size_t)i], g_comboIds[(size_t)(i + step)]);
-                }
-                int selId = g_comboIds[(size_t)dst];
+                // Déplacement direct : src → dst en une seule opération
+                // g_comboIds[i] == i car les IDs sont des index séquentiels
+                // MoveCombo fait un std::rotate dans g_combos
+                FreeComboSystem::MoveCombo(src, dst);
+                // Reconstruire g_comboIds depuis le nouvel ordre
+                int selId = -1;
                 FreeComboUI::RefreshComboList();
-                FreeComboUI::SelectCombo(selId);
+                // Sélectionner le combo qui était à src (maintenant à dst)
+                if (dst < (int)g_comboIds.size())
+                    selId = g_comboIds[(size_t)dst];
+                if (selId >= 0) FreeComboUI::SelectCombo(selId);
                 PersistToDisk();
             }
             InvalidateRect(g_hComboList, nullptr, FALSE);
@@ -2262,9 +2399,9 @@ static LRESULT CALLBACK ActionListSubclassProc(HWND hWnd, UINT msg, WPARAM wPara
                 RefreshActionList(); PersistToDisk();
                 return 0;
             }
-            g_actionDrag = true;
+            g_actionDrag       = true;
             g_actionDragSrcIdx = idx;
-            g_actionDragHover = idx;
+            g_actionDragHover  = idx;
             // Visual selection via the listbox, then we resume the capture -- Sélection visuelle via la listbox, puis on reprend la capture
             CallWindowProcW(g_origActionListProc, hWnd, msg, wParam, lParam);
             SetCapture(g_hPageForSubclass);
@@ -2307,9 +2444,16 @@ static LRESULT CALLBACK ComboListSubclassProc(HWND hWnd, UINT msg, WPARAM wParam
             // Notify the parent (LBN_SELCHANGE) to trigger LoadComboToUI() -- Notifier le parent (LBN_SELCHANGE) pour que LoadComboToUI() se déclenche
             SendMessageW(GetParent(hWnd), WM_COMMAND,
                 MAKEWPARAM(GetDlgCtrlID(hWnd), LBN_SELCHANGE), (LPARAM)hWnd);
-            g_comboDrag = true;
+            g_comboDrag       = true;
             g_comboDragSrcIdx = idx;
-            g_comboDragHover = idx;
+            g_comboDragHover  = idx;
+            // Enregistrer la position Y dans les coords de la page
+            {
+                POINT startPt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+                ClientToScreen(hWnd, &startPt);
+                ScreenToClient(g_hPageForSubclass, &startPt);
+                g_comboDragStartY = startPt.y;
+            }
             SetCapture(g_hPageForSubclass);
             SetCursor(LoadCursorW(nullptr, IDC_HAND));
             return 0;

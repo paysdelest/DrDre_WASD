@@ -74,3 +74,12 @@ void Backend_SetMacroAnalog(uint16_t hid, float analogValue);
 void Backend_ClearMacroAnalog(uint16_t hid);
 // Set macro analog for a fixed duration (ms). After duration expires the macro injection is cleared.
 void Backend_SetMacroAnalogForMs(uint16_t hid, float analogValue, uint32_t durationMs);
+
+// ---- Remap Toggle (F1) ----
+// Désactive toutes les liaisons touches→contrôleur sans effacer les bindings.
+// Quand OFF : le backend envoie un rapport vide (joysticks centrés, boutons relâchés).
+// Quand ON  : comportement normal.
+void Backend_SetRemapEnabled(bool enabled);
+bool Backend_GetRemapEnabled();
+bool Backend_ToggleRemap(); // Toggle — retourne le NOUVEL état (true = ON)
+

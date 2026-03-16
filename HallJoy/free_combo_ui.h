@@ -47,6 +47,8 @@ namespace FreeComboUI
         ID_BTN_CAPTURE_MOUSE  = 2021,  // Live capture mouse button for action value
         ID_CHK_CANCEL_RELEASE = 2022,  // Cancel on release
         ID_EDIT_REPEAT_COUNT  = 2023,  // Run N times
+        ID_CHK_LONG_PRESS     = 2024,  // Long press enable
+        ID_EDIT_LONG_PRESS_MS = 2025,  // Long press duration (ms)
         ID_TIMER_CAPTURE = 2099,
         ID_TIMER_MOUSE_CAPTURE = 2098,  // Poll mouse during action capture
         // Whitelist UI

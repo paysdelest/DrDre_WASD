@@ -1,6 +1,6 @@
 //{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
-// Used by HellJoy.rc
+// Used by HellJoy.rc 
 
 #define IDS_APP_TITLE			103
 
@@ -14,7 +14,7 @@
 #define IDC_HALLJOY			109
 #define IDR_WOOTING_WRAPPER    129
 #define IDR_MOUSE_PNG          130
-#define IDR_LANTERN_26_PNG     131
+#define IDR_LANTERN_46_PNG     131
 #define IDR_COMBO_PNG         132
 #define IDC_MYICON				2
 #ifndef IDC_STATIC

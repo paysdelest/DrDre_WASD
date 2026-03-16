@@ -196,8 +196,17 @@ std::wstring FreeTrigger::ToString() const
     if (!modStr.empty())
         result = modStr + L" + ";
     if (holdKeyType != FreeTriggerKeyType::None) {
+        bool isSameKey = (holdKeyType == keyType &&
+            (holdKeyType != FreeTriggerKeyType::Keyboard || holdVkCode == vkCode));
+        if (isSameKey) {
+            // hold seul
+            result += L"[hold] ";
+            result += FreeTriggerKeyTypeToString(keyType, vkCode);
+            return result;
+        }
+        result += L"[hold] ";
         result += FreeTriggerKeyTypeToString(holdKeyType, holdVkCode);
-        result += L" + ";
+        result += keyTypeIsHold ? L" + [hold] " : L" + [tap] ";
     }
     result += FreeTriggerKeyTypeToString(keyType, vkCode);
     return result;
@@ -257,8 +266,16 @@ static void FinalizeSingleCAPTUREIfTimeoutUnlocked()
         return;
 
     g_CAPTUREdTrigger = {};
+    // Si le bouton du 1er input est encore maintenu au timeout
+    // → c'est un trigger "hold seul" : holdKeyType=keyType=même bouton
+    bool stillHeld = IsTriggerKeyHeld(g_CAPTUREFirstInput.keyType,
+                                      g_CAPTUREFirstInput.vkCode);
+    if (stillHeld) {
+        g_CAPTUREdTrigger.holdKeyType = g_CAPTUREFirstInput.keyType;
+        g_CAPTUREdTrigger.holdVkCode  = g_CAPTUREFirstInput.vkCode;
+    }
     g_CAPTUREdTrigger.keyType = g_CAPTUREFirstInput.keyType;
-    g_CAPTUREdTrigger.vkCode = g_CAPTUREFirstInput.vkCode;
+    g_CAPTUREdTrigger.vkCode  = g_CAPTUREFirstInput.vkCode;
     SetCAPTUREModifierFromCurrentState(g_CAPTUREdTrigger);
     NormalizeCAPTUREdTrigger(g_CAPTUREdTrigger);
     g_CAPTUREWaitingSecond = false;
@@ -308,10 +325,14 @@ static bool HandleCAPTUREInput(FreeTriggerKeyType keyType, WORD vkCode)
 
     g_CAPTUREdTrigger = {};
     g_CAPTUREdTrigger.holdKeyType = g_CAPTUREFirstInput.keyType;
-    g_CAPTUREdTrigger.holdVkCode = g_CAPTUREFirstInput.vkCode;
-    g_CAPTUREdTrigger.keyType = keyType;
-    g_CAPTUREdTrigger.vkCode = vkCode;
-    g_CAPTUREdTrigger.modifier = FreeTriggerModifier::None;
+    g_CAPTUREdTrigger.holdVkCode  = g_CAPTUREFirstInput.vkCode;
+    g_CAPTUREdTrigger.keyType     = keyType;
+    g_CAPTUREdTrigger.vkCode      = vkCode;
+    g_CAPTUREdTrigger.modifier    = FreeTriggerModifier::None;
+    // Si le 1er bouton est encore maintenu au moment du 2e DOWN
+    // → hold+hold (les deux doivent être maintenus pour déclencher)
+    g_CAPTUREdTrigger.keyTypeIsHold =
+        IsTriggerKeyHeld(g_CAPTUREFirstInput.keyType, g_CAPTUREFirstInput.vkCode);
     NormalizeCAPTUREdTrigger(g_CAPTUREdTrigger);
 
     g_CAPTUREWaitingSecond = false;
@@ -368,14 +389,14 @@ static bool ExecAction(const ComboAction& action)
         OutputDebugStringW(buf);
         return false;
     }
-    // Whitelist : bloquer injection si app non autorisée (clavier + souris + texte)
+    // Whitelist :block injection if unauthorised app (keyboard + mouse + text) - bloquer injection si app non autorisée (clavier + souris + texte)
     if (action.type == ComboActionType::PressKey ||
         action.type == ComboActionType::ReleaseKey ||
         action.type == ComboActionType::TapKey ||
         action.type == ComboActionType::MouseClick ||
         action.type == ComboActionType::TypeText)
     {
-        if (!InjectionAllowed()) return true;  // action ignorée, macro continue
+        if (!InjectionAllowed()) return true;  // action ignored, macro continuing - action ignorée, macro continue
     }
     if (action.type == ComboActionType::Delay) {
         DWORD end = GetTickCount() + action.delayMs;
@@ -464,7 +485,7 @@ static void WorkerFunc()
         }
         if (item.actions.empty()) continue;
 
-        // Watchdog : reset pour ce run
+        // Watchdog : reset for this run - reset pour ce run
         g_wdStartTick.store(GetTickCount(), std::memory_order_relaxed);
         g_wdActionCount.store(0, std::memory_order_relaxed);
         g_wdCurrentComboName = item.comboName;
@@ -502,8 +523,13 @@ static bool ModifierMatches(FreeTriggerModifier mod)
 static bool TriggerExtraConditionsMatch(const FreeTrigger& trigger)
 {
     if (!ModifierMatches(trigger.modifier)) return false;
-    if (trigger.holdKeyType != FreeTriggerKeyType::None)
-        return IsTriggerKeyHeld(trigger.holdKeyType, trigger.holdVkCode);
+    if (trigger.holdKeyType != FreeTriggerKeyType::None) {
+        if (!IsTriggerKeyHeld(trigger.holdKeyType, trigger.holdVkCode))
+            return false;
+        // hold+hold : keyType doit aussi être maintenu
+        if (trigger.keyTypeIsHold)
+            return IsTriggerKeyHeld(trigger.keyType, trigger.vkCode);
+    }
     return true;
 }
 
@@ -516,7 +542,7 @@ static void FireCombo(FreeCombo& combo)
     item.repeatDelayMs = combo.repeatDelayMs;
     item.cancelOnRelease = combo.cancelOnRelease;
     item.trigger = combo.trigger;
-    item.comboName = combo.name;  // pour logs watchdog
+    item.comboName = combo.name;  // logs watchdog
     {
         std::lock_guard<std::mutex> qLock(g_queueMutex);
         g_queue.push(std::move(item));
@@ -541,14 +567,15 @@ namespace FreeComboSystem
     void Shutdown()
     {
         // IMPORTANT : ne pas vider g_combos ici !
-        // main.cpp appelle SaveToFile() PUIS Shutdown() dans cet ordre :
+        // IMPORTANT: do not empty g_combos here!
+        // main.cpp calls SaveToFile() THEN Shutdown() in that order: - main.cpp appelle SaveToFile() PUIS Shutdown() dans cet ordre :
         //   ShutdownFreeComboSystem() -> SaveToFile() -> Shutdown()
-        // Si on vidait g_combos dans Shutdown(), SaveToFile() SAVErait un fichier vide.
+        // If g_combos were emptied in Shutdown(), SaveToFile() would save an empty file. - Si on vidait g_combos dans Shutdown(), SaveToFile() SAVErait un fichier vide.
         g_workerRunning = false;
         g_queueCv.notify_all();
         if (g_worker.joinable()) g_worker.join();
-        // g_combos est intentionnellement conserve pour que SaveToFile puisse etre appele apres.
-        // Le destructeur de g_combos (fin de programme) s occupera du nettoyage.
+        // g_combos is intentionally retained so that SaveToFile can be called afterwards - g_combos est intentionnellement conserve pour que SaveToFile puisse etre appele apres.
+        // The g_combos destroyer (end of programme) will take care of cleaning up.- Le destructeur de g_combos (fin de programme) s occupera du nettoyage.
     }
 
     // --- CRUD ---
@@ -595,6 +622,25 @@ namespace FreeComboSystem
         if (idA < 0 || idA >= (int)g_combos.size()) return false;
         if (idB < 0 || idB >= (int)g_combos.size()) return false;
         std::swap(g_combos[(size_t)idA], g_combos[(size_t)idB]);
+        return true;
+    }
+
+    bool MoveCombo(int srcIdx, int dstIdx)
+    {
+        std::lock_guard<std::mutex> lock(g_comboMutex);
+        int n = (int)g_combos.size();
+        if (srcIdx < 0 || srcIdx >= n) return false;
+        if (dstIdx < 0 || dstIdx >= n) return false;
+        if (srcIdx == dstIdx) return true;
+        // Déplacement direct avec std::rotate — O(n), pas de swaps successifs
+        if (srcIdx < dstIdx)
+            std::rotate(g_combos.begin() + srcIdx,
+                        g_combos.begin() + srcIdx + 1,
+                        g_combos.begin() + dstIdx + 1);
+        else
+            std::rotate(g_combos.begin() + dstIdx,
+                        g_combos.begin() + srcIdx,
+                        g_combos.begin() + srcIdx + 1);
         return true;
     }
 
@@ -806,7 +852,25 @@ namespace FreeComboSystem
             isDown = true;
         }
 
-        if (!isDown) return;
+        // Long press : BUTTONUP → annuler _lpWaiting si durée non atteinte
+        if (!isDown) {
+            FreeTriggerKeyType upType = FreeTriggerKeyType::None;
+            if (msg == WM_LBUTTONUP)  upType = FreeTriggerKeyType::MouseLeft;
+            else if (msg == WM_RBUTTONUP)  upType = FreeTriggerKeyType::MouseRight;
+            else if (msg == WM_MBUTTONUP)  upType = FreeTriggerKeyType::MouseMiddle;
+            if (upType != FreeTriggerKeyType::None) {
+                std::unique_lock<std::mutex> lkUp(g_comboMutex, std::try_to_lock);
+                if (lkUp.owns_lock()) {
+                    for (auto& combo : g_combos) {
+                        if (!combo.longPressEnabled || !combo._lpWaiting) continue;
+                        if (combo.trigger.keyType == upType ||
+                            combo.trigger.holdKeyType == upType)
+                        { combo._lpWaiting = false; combo._lpFired = false; }
+                    }
+                }
+            }
+            return;
+        }
 
         std::unique_lock<std::mutex> lock(g_comboMutex, std::try_to_lock);
         if (!lock.owns_lock()) return;
@@ -817,6 +881,13 @@ namespace FreeComboSystem
             if (combo.trigger.keyType != eventType &&
                 combo.trigger.keyType != fallbackEventType) continue;
             if (!TriggerExtraConditionsMatch(combo.trigger)) continue;
+            // Long press : différer si délai configuré
+            if (combo.longPressEnabled) {
+                combo._lpPressStartTime = GetTickCount();
+                combo._lpWaiting        = true;
+                combo._lpFired          = false;
+                break;
+            }
             FireCombo(combo);
             break; // Prioritize latest combo and avoid double-fire (e.g. P then G).
         }
@@ -851,6 +922,19 @@ namespace FreeComboSystem
         else if (vk == VK_LWIN || vk == VK_RWIN)
             g_winHeld = isDown;
 
+        // F2: keyUp — annuler longPress
+        if (isUp) {
+            std::unique_lock<std::mutex> lkUp(g_comboMutex, std::try_to_lock);
+            if (lkUp.owns_lock()) {
+                for (auto& combo : g_combos) {
+                    if (!combo.longPressEnabled) continue;
+                    if (combo.trigger.keyType != FreeTriggerKeyType::Keyboard) continue;
+                    if (combo.trigger.vkCode != vk) continue;
+                    combo._lpWaiting = false;
+                    combo._lpFired   = false;
+                }
+            }
+        }
         if (!isDown) return false;
 
         // --- CAPTURE MODE ---
@@ -870,6 +954,13 @@ namespace FreeComboSystem
             if (combo.trigger.keyType != FreeTriggerKeyType::Keyboard) continue;
             if (combo.trigger.vkCode != vk) continue;
             if (!TriggerExtraConditionsMatch(combo.trigger)) continue;
+            // F2: Long Press
+            if (combo.longPressEnabled) {
+                combo._lpPressStartTime = GetTickCount();
+                combo._lpWaiting        = true;
+                combo._lpFired          = false;
+                return true;
+            }
             FireCombo(combo);
             return true;
         }
@@ -884,8 +975,28 @@ namespace FreeComboSystem
         if (!lock.owns_lock()) return;
 
         for (auto& combo : g_combos) {
+            // F2: Long Press check
+            if (combo.longPressEnabled && combo._lpWaiting && !combo._lpFired) {
+                DWORD elapsed = now - combo._lpPressStartTime;
+                if (elapsed >= combo.longPressMs) {
+                    // Vérifier que le bouton/touche est encore maintenu
+                    bool stillHeld = IsTriggerKeyHeld(combo.trigger.keyType,
+                                                       combo.trigger.vkCode);
+                    if (stillHeld) {
+                        combo._lpFired   = true;
+                        combo._lpWaiting = false;
+                        FireCombo(combo);
+                    } else {
+                        // Relâché avant le délai — annuler silencieusement
+                        combo._lpWaiting = false;
+                        combo._lpFired   = false;
+                    }
+                }
+            }
             if (!combo.enabled || !combo.repeatWhileHeld) continue;
             if (!combo.trigger.IsValid()) continue;
+            // Long press : ne pas répéter avant que le premier tir soit parti
+            if (combo.longPressEnabled && !combo._lpFired) continue;
 
             // Check whether trigger key/button is still held
             bool held = IsTriggerKeyHeld(combo.trigger.keyType, combo.trigger.vkCode);
@@ -906,7 +1017,7 @@ namespace FreeComboSystem
                     FireCombo(combo);
                 }
                 else {
-                    // Hard stop : vider la queue + annuler le run en cours
+                    // Hard stop: clear the queue + cancel the current run - Hard stop : vider la queue + annuler le run en cours
                     {
                         std::lock_guard<std::mutex> qLock(g_queueMutex);
                         while (!g_queue.empty()) g_queue.pop();
@@ -949,23 +1060,57 @@ namespace FreeComboSystem
 
     // --- SAVE ---
     // ── EmergencyStop ────────────────────────────────────────────────────────
-    // Arrêt immédiat : vide la queue + cancelle le run en cours.
-    // Appelle avec une raison pour le log, ex: L"user-hotkey"
+    // Immediate stop: empties the queue + cancels the current run - Arrêt immédiat : vide la queue + cancelle le run en cours.
+    // Call with a reason for the log, e.g. ‘user-hotkey’ - Appelle avec une raison pour le log, ex: L"user-hotkey"
     void EmergencyStop(const wchar_t* reason)
     {
-        // 1. Vider la queue
+        // 1 Empty the queue -  Vider la queue
         {
             std::lock_guard<std::mutex> qLock(g_queueMutex);
             while (!g_queue.empty()) g_queue.pop();
         }
-        // 2. Annuler le run en cours
+        // 2. Cancel the current run - Annuler le run en cours
         g_cancelCurrent.store(true, std::memory_order_relaxed);
 
+        // 3. Reset injected mouse status (live mouse view) - Reset état souris injecté (vue live mouse)
+        g_injectedMouseState.store(0, std::memory_order_relaxed);
+
+        // 4. Auto-release keys potentially held down by a macro - Auto-release touches potentiellement maintenues par une macro
+        static const WORD keysToRelease[] = {
+            VK_LCONTROL, VK_RCONTROL,
+            VK_LSHIFT,   VK_RSHIFT,
+            VK_LMENU,    VK_RMENU,
+            VK_LWIN,     VK_RWIN
+        };
+        for (WORD vk : keysToRelease) {
+            INPUT i{};
+            i.type = INPUT_KEYBOARD;
+            i.ki.wVk = vk;
+            i.ki.wScan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+            i.ki.dwFlags = KEYEVENTF_KEYUP | KEYEVENTF_SCANCODE;
+            i.ki.dwExtraInfo = (ULONG_PTR)0x484A4D43ULL;
+            SendInput(1, &i, sizeof(INPUT));
+        }
+
+        // 5. Auto-release boutons souris
+        INPUT mouseReleases[5] = {};
+        mouseReleases[0].type = INPUT_MOUSE; mouseReleases[0].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        mouseReleases[1].type = INPUT_MOUSE; mouseReleases[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+        mouseReleases[2].type = INPUT_MOUSE; mouseReleases[2].mi.dwFlags = MOUSEEVENTF_MIDDLEUP;
+        mouseReleases[3].type = INPUT_MOUSE; mouseReleases[3].mi.dwFlags = MOUSEEVENTF_XUP;
+        mouseReleases[3].mi.mouseData = XBUTTON1;
+        mouseReleases[4].type = INPUT_MOUSE; mouseReleases[4].mi.dwFlags = MOUSEEVENTF_XUP;
+        mouseReleases[4].mi.mouseData = XBUTTON2;
+        SendInput(5, mouseReleases, sizeof(INPUT));
+
+        // 6. Log
         wchar_t buf[256];
         _snwprintf_s(buf, _countof(buf), _TRUNCATE,
             L"[EMERGENCY STOP] reason: %s\n", reason);
         OutputDebugStringW(buf);
-    }
+    }   // 
+    //<--Ajout
+
 
     // ── Whitelist API ────────────────────────────────────────────────────────
     void SetWhitelistMode(int mode)  // 0=Off  1=Whitelist  2=FocusOnly
@@ -1020,12 +1165,13 @@ namespace FreeComboSystem
 
         for (const auto& combo : g_combos) {
             fwprintf(f, L"%s\n", combo.name.c_str());
-            fwprintf(f, L"%d %d %d %d %d\n",
+            fwprintf(f, L"%d %d %d %d %d %d\n",
                 (int)combo.trigger.modifier,
                 (int)combo.trigger.keyType,
                 (int)combo.trigger.vkCode,
                 (int)combo.trigger.holdKeyType,
-                (int)combo.trigger.holdVkCode);
+                (int)combo.trigger.holdVkCode,
+                combo.trigger.keyTypeIsHold ? 1 : 0);
             fwprintf(f, L"%d %d %d %d %u %d\n",
                 combo.enabled ? 1 : 0,
                 combo.repeatWhileHeld ? 1 : 0,
@@ -1066,7 +1212,7 @@ namespace FreeComboSystem
         else if (line == L"DRDRE_FREECOMBOS_V1") {}
         else { fclose(f); return false; }
 
-        // V5 : lire la config whitelist avant les combos
+        // V5 : read the whitelist configuration before the combos - lire la config whitelist avant les combos
         if (isV5) {
             std::wstring wlLine;
             if (ReadLine(f, wlLine)) {
@@ -1100,13 +1246,13 @@ namespace FreeComboSystem
             FreeCombo combo;
             if (!ReadLine(f, combo.name)) { parseOk = false; break; }
 
-            int mod = 0, keyType = 0, vk = 0, holdKeyType = 0, holdVk = 0;
+            int mod = 0, keyType = 0, vk = 0, holdKeyType = 0, holdVk = 0, keyTypeIsHoldInt = 0;
             if (!ReadLine(f, line)) { parseOk = false; break; }
             if (isV3 || isV2) {
-                if (swscanf_s(line.c_str(), L"%d %d %d %d %d", &mod, &keyType, &vk, &holdKeyType, &holdVk) != 5)
-                {
-                    parseOk = false; break;
-                }
+                // Lire 5 champs minimum, 6e (keyTypeIsHold) optionnel (compat anciens fichiers)
+                int nRead = swscanf_s(line.c_str(), L"%d %d %d %d %d %d",
+                    &mod, &keyType, &vk, &holdKeyType, &holdVk, &keyTypeIsHoldInt);
+                if (nRead < 5) { parseOk = false; break; }
             }
             else {
                 if (swscanf_s(line.c_str(), L"%d %d %d", &mod, &keyType, &vk) != 3)
@@ -1114,11 +1260,12 @@ namespace FreeComboSystem
                     parseOk = false; break;
                 }
             }
-            combo.trigger.modifier = (FreeTriggerModifier)mod;
-            combo.trigger.keyType = (FreeTriggerKeyType)keyType;
-            combo.trigger.vkCode = (WORD)vk;
-            combo.trigger.holdKeyType = (FreeTriggerKeyType)holdKeyType;
-            combo.trigger.holdVkCode = (WORD)holdVk;
+            combo.trigger.modifier      = (FreeTriggerModifier)mod;
+            combo.trigger.keyType       = (FreeTriggerKeyType)keyType;
+            combo.trigger.vkCode        = (WORD)vk;
+            combo.trigger.holdKeyType   = (FreeTriggerKeyType)holdKeyType;
+            combo.trigger.holdVkCode    = (WORD)holdVk;
+            combo.trigger.keyTypeIsHold = (keyTypeIsHoldInt != 0);
 
             int en = 0, rep = 0, del = 0, isEx = 0; unsigned rcount = 0; int crel = 0;
             if (!ReadLine(f, line)) { parseOk = false; break; }
@@ -1173,9 +1320,9 @@ namespace FreeComboSystem
         }
         fclose(f);
 
-        // FIX : si le parsing a reussi au moins partiellement, on applique ce qu on a.
-        // L ancienne condition loaded.size() != count rejetait TOUT si 1 combo etait corrompu.
-        // Desormais on accepte un LOAD partiel plutot que de tout perdre.
+        // FIX : if the parsing was at least partially successful, we apply what we have - si le parsing a reussi au moins partiellement, on applique ce qu on a.
+        //  The old condition loaded.size() != count rejected EVERYTHING if 1 combo was corrupted. - L ancienne condition loaded.size() != count rejetait TOUT si 1 combo etait corrompu.
+        // Now we accept a partial LOAD rather than losing everything. - Desormais on accepte un LOAD partiel plutot que de tout perdre.
         if (!parseOk && loaded.empty())
             return false;   // Fichier totalement illisible -> echec propre
 

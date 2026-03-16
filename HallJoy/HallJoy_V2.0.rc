@@ -26,9 +26,8 @@ IDI_HALLJOY              ICON         "DrDre-WASD.ico"
 IDI_SMALL                ICON         "DrDre-WASD.ico"
 IDR_WOOTING_WRAPPER      RCDATA       "..\\runtime\\wooting_analog_wrapper.dll"
 IDR_MOUSE_PNG            RCDATA       "..\\assets\\mouse_transparent_defringed.png"
-//IDR_LANTERN_24_PNG       RCDATA       "..\\assets\\watchman_lantern_24.png"
-IDR_LANTERN_26_PNG       RCDATA       "..\\assets\\watchman_lantern_26.png"
-IDR_COMBO_PNG           RCDATA       "..\\assets\\combo_28.png"
+IDR_LANTERN_46_PNG       RCDATA       "..\\assets\\watchman_lantern_46.png"
+IDR_COMBO_PNG           RCDATA       "..\\assets\\combo_34.png"
 
 /////////////////////////////////////////////////////////////////////////////
 //

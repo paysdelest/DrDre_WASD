@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/af8e7d15-9f30-4b85-8157-1231d631a11f" width="420"/>
+  <img src="DrDre-WASD.png" width="420"/>
 </p>
 
 <h1 align="center">DrDre_WASD</h1>
@@ -21,19 +21,19 @@
 ## 🖼️ Interface Preview
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/e30a7bd0-5c8d-4620-b018-8cd4fe8ed531" width="800"/>
+  <img src="assets/images/interface1.png" width="800"/>
 </p>
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/53dcb964-6d6d-4a76-9d40-e0065aa59845" width="800"/>
+  <img src="assets/images/interface2.png" width="800"/>
 </p>
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/1561b97c-6605-4866-81c1-6d06a7d39748" width="800"/>
+  <img src="assets/images/interface3.png" width="800"/>
 </p>
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/fa9de216-9203-4c64-a08b-1668247c67d7" width="800"/>
+  <img src="assets/images/interface4.png" width="800"/>
 </p>
 
 ---
@@ -158,6 +158,7 @@ You can bind **complex action sequences** to:
 - Scroll wheel combos  
 - Held-button combos (e.g. Right-click held + Left click)  
 - Simultaneous multi-button triggers  
+- Long Press trigger
 
 No dedicated macro keys required.
 
@@ -185,6 +186,20 @@ You can also type the button name directly in the value field without using the 
 - The action type **dropdown opens fully** on click, showing all 6 action types at once
 
 ---
+
+⚠️ ## ⏱️ Hold Delay
+
+Each combo can now require a **minimum hold duration** before the first action fires.
+
+This is distinct from the existing *Long Press* option — it applies specifically to combos with a `[hold]` trigger and controls how long you must maintain the button before the macro starts.
+
+| Setting | Role |
+|---|---|
+| **Hold delay (ms)** | Minimum hold time before the **first** fire |
+| **Repeat delay (ms)** | Interval between **subsequent** fires (when Repeat while held is on) |
+
+These two settings are fully independent. The repeat loop only starts **after** the first fire — if you release before the hold delay expires, nothing happens.
+
 
 ## 🎮 Example Gaming Macros
 
@@ -258,6 +273,14 @@ DrDre_WASD includes a built-in macro safety system designed to prevent runaway m
 
 ---
 
+### 🟢 Remap Toggle
+Suspend all bindings instantly without losing your configuration.
+- **Button** always visible in the UI (top-right corner)
+- **Global hotkey** `Ctrl + Alt + R` — works in-game
+- When OFF: controller report is zeroed, `Block Bound Key` is bypassed so you can type normally
+
+---
+
 ### Emergency Stop
 
 **Shortcut: `Ctrl + Alt + Backspace`**
@@ -276,13 +299,18 @@ FreeComboSystem::EmergencyStop(L"user-hotkey");
 
 ---
 
+## ⌨️ Global Hotkeys
+
+| Hotkey | Action |
+|---|---|
+| `Ctrl + Alt + R` | Toggle Remap ON / OFF |
+| `Ctrl + Alt + Backspace` | Emergency Stop (clear macro queue) |
+
+---
+
 ### Watchdog
 
 Three independent limits run simultaneously in the background. All violations are logged to the debug output (`OutputDebugStringW` — visible in Visual Studio Output or [DebugView](https://learn.microsoft.com/en-us/sysinternals/downloads/debugview)).
-
-Cannot be changed from the UI — 
-edit kWD_MaxRuntimeMs, kWD_MaxActions, kWD_MaxTrigsPerSec 
-in free_combo_system.cpp
 
 #### 1. Runtime Timeout — 10 seconds
 A macro that runs for more than **10 seconds continuously** is stopped.
@@ -341,7 +369,7 @@ Before every `SendInput` call, the engine checks the foreground window's process
 4. Save any combo — the whitelist is persisted in the `.fcombos` file
 
 **Persistence:**
-The whitelist is saved in the `free_combos.dat` format. Files from earlier versions (V1–V4) load normally with the whitelist empty and mode set to OFF.
+The whitelist is saved in the `DRDRE_FREECOMBOS_V5` format. Files from earlier versions (V1–V4) load normally with the whitelist empty and mode set to OFF.
 
 ```
 WL_MODE 1
@@ -352,15 +380,14 @@ WL_ENTRY valorant.exe
 
 > **Known limitation:** If the foreground process is elevated (e.g. running as Administrator) and DrDre_WASD is not, `OpenProcess()` may fail and injection will be blocked for that app even if it is whitelisted.
 
-> **Workaround:** Launch DrDre_WASD as Administrator
-> to resolve elevated process injection issues.
-
 ---
 
 ### Limits & Known Gaps
 
 | Issue | Status |
 |-------|--------|
+| Keys held down at watchdog stop | Not auto-released — use `Ctrl+Alt+Backspace` to fully reset |
+| Whitelist not reloaded into the UI list on startup | Visual only — the engine loads and applies the whitelist correctly |
 | Watchdog limits are compile-time constants | Cannot be changed from the UI — edit `kWD_MaxRuntimeMs`, `kWD_MaxActions`, `kWD_MaxTrigsPerSec` in `free_combo_system.cpp` |
 | Debug logs only visible in DebugView / VS Output | No in-app log panel yet |
 
@@ -413,6 +440,7 @@ DrDre_WASD processes input through three distinct pipelines:
 
 > ⚠️ **Note**: `wooting_analog_sdk.dll` and `wooting_analog_wrapper.dll` are included in the `runtime\` folder of this repository and bundled in the source zip. If downloading v1.0, get them from the [runtime folder](https://github.com/paysdelest/DrDre_WASD/tree/main/runtime) or from [Wooting Analog SDK releases](https://github.com/WootingKb/wooting-analog-sdk/releases) and place them in `runtime\` before building.
 
+> ⚠️ **Note for developers**: `free_combo_system.cpp` and `free_combo_ui.cpp` must be explicitly added to the Visual Studio project (right-click project → **Add → Existing Item**). They are not referenced in the `.vcxproj` by default.
 
 ---
 
@@ -422,7 +450,7 @@ A critical bug was identified and fixed in the **universal-analog-plugin** (`abi
 
 **Root cause**: `awaitCompletion()` was called while `devices_mtx` was still held. The internal device thread then called `discover_devices()`, which also tries to acquire `devices_mtx` — deadlock. Windows force-terminated the thread, corrupting internal pointers.
 
-**Fix**: split `unload()` into two passes — `cancelReceiveReport()` with the lock held, then `awaitCompletion()` after releasing the lock. The fixed DLL runs stably for 24h+.
+**Fix**: split `unload()` into two passes — `cancelReceiveReport()` with the lock held, then `awaitCompletion()` after releasing the lock. The fixed DLL runs stably for 12h+.
 
 A fix has been submitted upstream to [universal-analog-plugin](https://github.com/calamity-inc/universal-analog-plugin).
 
@@ -432,7 +460,7 @@ A fix has been submitted upstream to [universal-analog-plugin](https://github.co
 
 - **All analog values at 0** — check your keyboard's firmware mode. Some keyboards disable analog SDK output when **Turbo mode** is enabled. Disable it and restart.
 - **Analog stops working after a plugin update** — reinstall the DLL files from this repository and keep only one plugin variant in `C:\Program Files\WootingAnalogPlugins\`
-- **Macro does not trigger** — check whether the emergency stop was activated (`Ctrl+alt+Backspace`), or verify the macro is enabled (green dot in the list)
+- **Macro does not trigger** — check whether the emergency stop was activated (`Ctrl+Shift+Alt+F12`), or verify the macro is enabled (green dot in the list)
 - **Macro enabled but not firing** — make sure the trigger combination is not captured by another application or system shortcut
 - **Controls do not resize correctly** — make sure you are using v2.0 or later; previous builds had a WM_SIZE layout bug when the tab was hidden
 
@@ -502,7 +530,7 @@ MIT — free to use, modify and redistribute. See [LICENSE](LICENSE).
 
 ---
 
-*DrDre_WASD — Precision Input Automation for Hall-Effect Keyboards*
+*DrDre_WASD v2.3 — Precision Input Automation for Hall-Effect Keyboards*
 
 ---
 

@@ -18,12 +18,6 @@ Release/
 *.obj
 *.idb
 
-# Images not distributed to users
-assets/images/
-DrDre-WASD.png
-# ignorer le logo
-# DrDre-WASD.png
-
 # Except our fixed DLLs in plugins/ - keep them
 !plugins/abiv0.dll
 !plugins/abiv1.dll

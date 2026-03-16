@@ -569,7 +569,7 @@ static LRESULT CALLBACK KeyboardBlockHookProc(int nCode, WPARAM wParam, LPARAM l
                         {
                             if (g_hookKeyDown[vk])
                             {
-                                if (hid != 0 && Settings_GetBlockBoundKeys() && Bindings_IsHidBound(hid) && !IsOwnForegroundWindow())
+                                if (hid != 0 && Settings_GetBlockBoundKeys() && Backend_GetRemapEnabled() && Bindings_IsHidBound(hid) && !IsOwnForegroundWindow())
                                 {
                                     INPUT inputs[2] = {};
                                     inputs[0].type = INPUT_KEYBOARD;
@@ -596,7 +596,7 @@ static LRESULT CALLBACK KeyboardBlockHookProc(int nCode, WPARAM wParam, LPARAM l
                     }
                 }
 
-                if (Settings_GetBlockBoundKeys() && !injected && !IsOwnForegroundWindow())
+                if (Settings_GetBlockBoundKeys() && Backend_GetRemapEnabled() && !injected && !IsOwnForegroundWindow())
                     if (hid != 0 && Bindings_IsHidBound(hid)) return 1;
             }
         }
