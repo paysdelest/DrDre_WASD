@@ -54,6 +54,12 @@ static const UINT SETTINGS_SAVE_TIMER_MS = 350;
 static HWND g_hPageMain = nullptr;
 static HHOOK g_hKeyboardHook = nullptr;
 static HHOOK g_hMouseHook = nullptr;
+static HWND  g_hMainWnd = nullptr;  // ref fenêtre principale
+static HWND  g_hCompactWnd = nullptr;  // fenêtre mode compact
+HWND  g_hCompactTip = nullptr;  // tooltip fenêtre compacte — extern dans keyboard_ui.cpp
+static bool  g_compactMode = false;
+static bool  g_compactEditSyncing = false; // bloque EN_CHANGE pendant sync initiale
+static constexpr int HOTKEY_COMPACT = 0xE5D; // Ctrl+.
 
 static bool IsWindowRectVisibleOnAnyScreen(int x, int y, int w, int h)
 {
@@ -525,11 +531,21 @@ uint16_t HidFromKeyboardScanCode(DWORD scanCode, bool extended, DWORD vkCode)
     }
 }
 
+// FIX WASD lock: g_hookKeyDown moved to file scope so it can be reset
+// externally on USB reconnect or Wooting restart. When a key is physically
+// disconnected mid-press, the KEYUP is never seen → g_hookKeyDown[vk] stays
+// true → every subsequent press is blocked indefinitely → reboot required.
+static bool g_hookKeyDown[256] = { 0 };
+
+void App_ResetHookKeyDown()
+{
+    memset(g_hookKeyDown, 0, sizeof(g_hookKeyDown));
+}
+
 static LRESULT CALLBACK KeyboardBlockHookProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION && lParam)
     {
-        static bool g_hookKeyDown[256] = { 0 };
 
         // FreeComboSystem : toujours actif, ecoute toutes les touches non-injectees
         if (wParam == WM_KEYDOWN || wParam == WM_KEYUP || wParam == WM_SYSKEYDOWN || wParam == WM_SYSKEYUP)
@@ -608,6 +624,12 @@ static LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION && lParam)
     {
+        // Wheel cooldown natif : bloquer les doublons molette avant le jeu
+        if ((wParam == WM_MOUSEWHEEL || wParam == WM_MOUSEHWHEEL) &&
+            !FreeComboSystem::IsWheelEventAllowed())
+        {
+            return 1; // bloquer — ne pas passer au jeu
+        }
         // FreeComboSystem : toujours actif
         FreeComboSystem::ProcessMouseEvent((UINT)wParam, wParam, lParam);
     }
@@ -635,6 +657,240 @@ static void ResizeChildren(HWND hwnd)
     SetWindowPos(g_hPageMain, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
 }
 
+// ═══════════════════════════════════════════════════════
+// Compact window proc
+// ═══════════════════════════════════════════════════════
+// Helper dessin bouton toggle pour la fenêtre compacte
+static void DrawCompactBtn(HWND hwnd, const DRAWITEMSTRUCT* dis, bool on,
+    const wchar_t* labelOn, const wchar_t* labelOff)
+{
+    HDC hdc = dis->hDC;
+    // Effacer tout le HWND (évite la barre blanche sur les côtés)
+    FillRect(hdc, &dis->rcItem, UiTheme::Brush_PanelBg());
+    // Rectangle réduit pour centrer visuellement le bouton
+    RECT rc = dis->rcItem;
+    rc.right -= 8;
+    bool down = (dis->itemState & ODS_SELECTED) != 0;
+    // Fond
+    COLORREF bg = UiTheme::Color_ControlBg();
+    if (down) bg = RGB(std::min(255, GetRValue(bg) + 14),
+        std::min(255, GetGValue(bg) + 14),
+        std::min(255, GetBValue(bg) + 14));
+    HBRUSH hbr = CreateSolidBrush(bg); FillRect(hdc, &rc, hbr); DeleteObject(hbr);
+    // Bordure
+    COLORREF bc = on ? UiTheme::Color_Accent() : UiTheme::Color_Border();
+    HPEN hp = CreatePen(PS_SOLID, on ? 2 : 1, bc);
+    HGDIOBJ op = SelectObject(hdc, hp), ob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 10, 10);
+    SelectObject(hdc, op); SelectObject(hdc, ob); DeleteObject(hp);
+    // Pastille
+    int dR = 5, dCx = rc.left + 12, dCy = (rc.top + rc.bottom) / 2;
+    COLORREF dc = on ? UiTheme::Color_Accent() : UiTheme::Color_TextMuted();
+    HBRUSH db = CreateSolidBrush(dc); HPEN dp = CreatePen(PS_SOLID, 1, dc);
+    SelectObject(hdc, db); SelectObject(hdc, dp);
+    Ellipse(hdc, dCx - dR, dCy - dR, dCx + dR, dCy + dR);
+    DeleteObject(db); DeleteObject(dp);
+    // Texte
+    HFONT hf = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+    if (!hf) hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    HGDIOBJ oldF = SelectObject(hdc, hf);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, on ? UiTheme::Color_Text() : UiTheme::Color_TextMuted());
+    RECT rt = { dCx + dR + 5, rc.top, rc.right - 3, rc.bottom };
+    DrawTextW(hdc, on ? labelOn : labelOff, -1, &rt,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(hdc, oldF);
+}
+
+static LRESULT CALLBACK CompactWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg) {
+    case WM_ERASEBKGND: return 1;
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc{}; GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, UiTheme::Brush_PanelBg());
+        // Bordure arrondie + label "ms" pour l'edit
+        HWND hEdit = GetDlgItem(hwnd, 0xF103);
+        if (hEdit && IsWindowVisible(hEdit)) {
+            RECT er{}; GetWindowRect(hEdit, &er);
+            MapWindowPoints(nullptr, hwnd, (LPPOINT)&er, 2);
+            HPEN ep = CreatePen(PS_SOLID, 1, UiTheme::Color_Border());
+            HGDIOBJ eop = SelectObject(hdc, ep), eob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            RoundRect(hdc, er.left - 1, er.top - 1, er.right + 1, er.bottom + 1, 8, 8);
+            SelectObject(hdc, eop); SelectObject(hdc, eob); DeleteObject(ep);
+            HFONT hf2 = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            HGDIOBJ oldF2 = SelectObject(hdc, hf2);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, UiTheme::Color_TextMuted());
+            RECT msRc = { er.right + 4,er.top,er.right + 28,er.bottom };
+            DrawTextW(hdc, L"ms", -1, &msRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(hdc, oldF2);
+        }
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_DRAWITEM: {
+        const DRAWITEMSTRUCT* dis = (const DRAWITEMSTRUCT*)lParam;
+        if (!dis || dis->CtlType != ODT_BUTTON) break;
+        WORD id = LOWORD(dis->CtlID);
+        if (id == 0xF101) {
+            DrawCompactBtn(hwnd, dis, Backend_GetRemapEnabled(),
+                L"Remap  ON", L"Remap  OFF");
+            return TRUE;
+        }
+        if (id == 0xF102) {
+            DrawCompactBtn(hwnd, dis, FreeComboSystem::GetWheelCooldownEnabled(),
+                L"Wheel Cooldown", L"Wheel Cooldown");
+            return TRUE;
+        }
+        if (id == 0xF104) {
+            HDC hdc = dis->hDC;
+            FillRect(hdc, &dis->rcItem, UiTheme::Brush_PanelBg());
+            RECT rc = dis->rcItem; rc.right -= 8;
+            bool down = (dis->itemState & ODS_SELECTED) != 0;
+            COLORREF bg = UiTheme::Color_ControlBg();
+            if (down) bg = RGB(std::min(255, GetRValue(bg) + 18),
+                std::min(255, GetGValue(bg) + 18),
+                std::min(255, GetBValue(bg) + 18));
+            HBRUSH hbr = CreateSolidBrush(bg); FillRect(hdc, &rc, hbr); DeleteObject(hbr);
+            HPEN hp = CreatePen(PS_SOLID, 1, UiTheme::Color_Accent());
+            HGDIOBJ op = SelectObject(hdc, hp), ob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 10, 10);
+            SelectObject(hdc, op); SelectObject(hdc, ob); DeleteObject(hp);
+            HFONT hf = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+            if (!hf) hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            HGDIOBJ oldF = SelectObject(hdc, hf);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, UiTheme::Color_Accent());
+            RECT ri = { rc.left + 4,rc.top,rc.left + 22,rc.bottom };
+            DrawTextW(hdc, L"\u25A3", -1, &ri, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SetTextColor(hdc, UiTheme::Color_TextMuted());
+            RECT rt = { rc.left + 22,rc.top,rc.right - 4,rc.bottom };
+            DrawTextW(hdc, L"Vue compl\u00E8te   Ctrl+.", -1, &rt,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(hdc, oldF);
+            return TRUE;
+        }
+        break;
+    }
+
+    case WM_COMMAND:
+        if (HIWORD(wParam) != BN_CLICKED && HIWORD(wParam) != EN_KILLFOCUS)
+            return 0; // ignorer focus/blur
+        // Bouton Vue complète — quitter le mode compact
+        if (LOWORD(wParam) == 0xF104 && HIWORD(wParam) == BN_CLICKED) {
+            if (g_hMainWnd)
+                PostMessageW(g_hMainWnd, WM_HOTKEY, HOTKEY_COMPACT, 0);
+            return 0;
+        }
+        // Bouton Remap
+        if (LOWORD(wParam) == 0xF101 && HIWORD(wParam) == BN_CLICKED) {
+            Backend_ToggleRemap();
+            // Invalider les boutons compacts ET principal
+            InvalidateRect(hwnd, nullptr, FALSE);
+            if (g_hPageMain) {
+                // Invalider le bouton Remap principal
+                HWND hRemapBtn = GetDlgItem(g_hPageMain, (int)0xF101);
+                if (hRemapBtn) InvalidateRect(hRemapBtn, nullptr, FALSE);
+                else InvalidateRect(g_hPageMain, nullptr, FALSE);
+            }
+            return 0;
+        }
+        // Bouton Wheel Cooldown
+        if (LOWORD(wParam) == 0xF102 && HIWORD(wParam) == BN_CLICKED) {
+            bool on = !FreeComboSystem::GetWheelCooldownEnabled();
+            // Lire le ms depuis l'edit compact
+            HWND hEdit = GetDlgItem(hwnd, 0xF103);
+            wchar_t buf[16] = {};
+            if (hEdit) GetWindowTextW(hEdit, buf, 16);
+            int ms = _wtoi(buf);
+            if (ms < 20 || ms > 5000) ms = 150;
+            FreeComboSystem::SetWheelCooldown(on, (uint32_t)ms);
+            if (hEdit) EnableWindow(hEdit, on);
+            {
+                std::wstring p = WinUtil_BuildPathNearExe(L"free_combos.dat");
+                FreeComboSystem::SaveToFile(p.c_str());
+            }
+            // Invalider bouton compact + bouton principal
+            InvalidateRect(hwnd, nullptr, FALSE);
+            // Invalider aussi le bouton WheelCD principal pour sync visuel
+            if (g_hPageMain) InvalidateRect(g_hPageMain, nullptr, FALSE);
+            return 0;
+        }
+        // Edit ms — sauvegarder à chaque changement (EN_CHANGE)
+        if (LOWORD(wParam) == 0xF103 &&
+            (HIWORD(wParam) == EN_CHANGE || HIWORD(wParam) == EN_KILLFOCUS) &&
+            !g_compactEditSyncing) {
+            HWND hEdit = GetDlgItem(hwnd, 0xF103);
+            if (hEdit) {
+                wchar_t buf[16] = {};
+                GetWindowTextW(hEdit, buf, 16);
+                int ms = _wtoi(buf);
+                if (ms >= 20 && ms <= 5000) {
+                    bool on = FreeComboSystem::GetWheelCooldownEnabled();
+                    FreeComboSystem::SetWheelCooldown(on, (uint32_t)ms);
+                    SetTimer(hwnd, 0xF199, 800, nullptr);
+                }
+            }
+            return 0;
+        }
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == 0xF199) {
+            KillTimer(hwnd, 0xF199);
+            std::wstring p = WinUtil_BuildPathNearExe(L"free_combos.dat");
+            FreeComboSystem::SaveToFile(p.c_str());
+            return 0;
+        }
+        break;
+
+    case WM_CTLCOLOREDIT: {
+        HDC hdc = (HDC)wParam;
+        SetBkColor(hdc, UiTheme::Color_ControlBg());
+        SetTextColor(hdc, UiTheme::Color_Text());
+        static HBRUSH s_br = nullptr;
+        if (!s_br) s_br = CreateSolidBrush(UiTheme::Color_ControlBg());
+        return (LRESULT)s_br;
+    }
+
+    case WM_MOUSEACTIVATE: {
+        // Autoriser l'activation si clic sur l'edit ms
+        POINT pt; GetCursorPos(&pt);
+        HWND hUnder = WindowFromPoint(pt);
+        HWND hEdit = GetDlgItem(hwnd, 0xF103);
+        if (hUnder && hUnder == hEdit)
+            return MA_ACTIVATE; // edit peut recevoir le focus
+        return MA_NOACTIVATE;  // boutons ne volent pas le focus
+    }
+
+    case WM_MOUSEMOVE:
+        if (g_hCompactTip) {
+            MSG tm{}; tm.hwnd = hwnd; tm.message = WM_MOUSEMOVE;
+            tm.wParam = wParam; tm.lParam = lParam;
+            SendMessageW(g_hCompactTip, TTM_RELAYEVENT, 0, (LPARAM)&tm);
+        }
+        break;
+
+    case WM_MOVE:
+        return 0;
+
+    case WM_CLOSE:
+        g_compactMode = false;
+        ShowWindow(hwnd, SW_HIDE);
+        if (g_hMainWnd) { ShowWindow(g_hMainWnd, SW_SHOW); SetForegroundWindow(g_hMainWnd); }
+        return 0;
+
+    case WM_DESTROY:
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
 static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -656,6 +912,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_CREATE:
     {
         Logger::Info("WM_CREATE", "Debut WM_CREATE");
+        g_hMainWnd = hwnd;
+        RegisterHotKey(hwnd, HOTKEY_COMPACT, MOD_CONTROL | MOD_NOREPEAT, VK_OEM_PERIOD);
         UiTheme::ApplyToTopLevelWindow(hwnd);
         Logger::Info("WM_CREATE", "UiTheme::ApplyToTopLevelWindow OK");
 
@@ -727,6 +985,47 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_HOTKEY:
+        if ((int)wParam == HOTKEY_COMPACT) {
+            g_compactMode = !g_compactMode;
+            if (g_compactMode) {
+                ShowWindow(hwnd, SW_HIDE);
+                if (g_hCompactWnd) {
+                    // Sync délai avec la valeur courante (sans déclencher EN_CHANGE)
+                    HWND hEdit = GetDlgItem(g_hCompactWnd, 0xF103);
+                    if (hEdit) {
+                        g_compactEditSyncing = true;
+                        wchar_t buf[16];
+                        _itow_s((int)FreeComboSystem::GetWheelCooldownMs(), buf, 16, 10);
+                        SetWindowTextW(hEdit, buf);
+                        g_compactEditSyncing = false;
+                        // Edit en lecture seule en mode compact
+                        EnableWindow(hEdit, FALSE);
+                    }
+                    ShowWindow(g_hCompactWnd, SW_SHOW);
+                    SetForegroundWindow(g_hCompactWnd);
+                }
+            }
+            else {
+                // Sauvegarder le délai avant de quitter le mode compact
+                if (g_hCompactWnd) {
+                    HWND hEditC = GetDlgItem(g_hCompactWnd, 0xF103);
+                    if (hEditC) {
+                        wchar_t bufC[16] = {};
+                        GetWindowTextW(hEditC, bufC, 16);
+                        int msC = _wtoi(bufC);
+                        if (msC >= 20 && msC <= 5000) {
+                            bool onC = FreeComboSystem::GetWheelCooldownEnabled();
+                            FreeComboSystem::SetWheelCooldown(onC, (uint32_t)msC);
+                            std::wstring pC = WinUtil_BuildPathNearExe(L"free_combos.dat");
+                            FreeComboSystem::SaveToFile(pC.c_str());
+                        }
+                    }
+                    ShowWindow(g_hCompactWnd, SW_HIDE);
+                }
+                ShowWindow(hwnd, SW_SHOW);
+                SetForegroundWindow(hwnd);
+            }
+        }
         return 0;
 
     case WM_TIMER:
@@ -784,9 +1083,21 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             Settings_SetMainWindowPosYPx((int)wr.top);
         }
 
+        // Sauvegarder position de la fenêtre compacte
+        if (g_hCompactWnd) {
+            RECT cr{}; GetWindowRect(g_hCompactWnd, &cr);
+            Settings_SetCompactWinPosXPx(cr.left);
+            Settings_SetCompactWinPosYPx(cr.top);
+            DestroyWindow(g_hCompactWnd); g_hCompactWnd = nullptr;
+        }
+        UnregisterHotKey(hwnd, HOTKEY_COMPACT);
         SettingsIni_Save(AppPaths_SettingsIni().c_str());
         RealtimeLoop_Stop();
         Backend_Shutdown();
+
+        // FIX WASD lock: reset hookKeyDown before unhooking so any key stuck
+        // mid-press at shutdown is cleared — prevents stale state on next launch.
+        App_ResetHookKeyDown();
 
         // FIX : désinstallation des hooks ICI, avant PostQuitMessage
         // Auparavant fait après la boucle de messages → hook souris encore actif
@@ -865,6 +1176,49 @@ int App_Run(HINSTANCE hInst, int nCmdShow)
     if (hSmall) SendMessageW(hwnd, WM_SETICON, (WPARAM)ICON_SMALL, (LPARAM)hSmall);
 
     ShowWindow(hwnd, nCmdShow);
+
+    // ── Créer la fenêtre compacte ──────────────────────────────
+    {
+        UINT dpiC = WinUtil_GetSystemDpiCompat();
+        int cW = MulDiv(150, (int)dpiC, 96); // largeur : 150px base
+        int cH = MulDiv(132, (int)dpiC, 96); // hauteur : 4 contrôles
+        int cX = Settings_GetCompactWinPosXPx();
+        int cY = Settings_GetCompactWinPosYPx();
+        // Si pas de position sauvegardée → coin haut-droit de l'écran
+        if (cX == std::numeric_limits<int>::min() ||
+            cY == std::numeric_limits<int>::min()) {
+            int sw = GetSystemMetrics(SM_CXSCREEN);
+            cX = sw - cW - 20;
+            cY = 20;
+        }
+        // Enregistrer la classe si pas déjà fait
+        static bool compactClassReg = false;
+        if (!compactClassReg) {
+            WNDCLASSW cwc{};
+            cwc.lpfnWndProc = CompactWndProc;
+            cwc.hInstance = hInst;
+            cwc.lpszClassName = L"DrDreCompactWnd";
+            cwc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+            cwc.hbrBackground = nullptr;
+            RegisterClassW(&cwc);
+            compactClassReg = true;
+        }
+        g_hCompactWnd = CreateWindowExW(
+            0,
+            L"DrDreCompactWnd", L"DrDre_WASD",
+            WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE * 0,
+            cX, cY, cW, cH,
+            nullptr, nullptr, hInst, nullptr);
+        if (g_hCompactWnd) {
+            UiTheme::ApplyToTopLevelWindow(g_hCompactWnd);
+            // Icône app dans la barre de titre de la fenêtre compacte
+            if (wc.hIcon)
+                SendMessageW(g_hCompactWnd, WM_SETICON, ICON_BIG, (LPARAM)wc.hIcon);
+            if (hSmall)
+                SendMessageW(g_hCompactWnd, WM_SETICON, ICON_SMALL, (LPARAM)hSmall);
+            KeyboardUI_SetCompactWnd(g_hCompactWnd, hInst);
+        }
+    }
 
     Logger::Info("APP_RUN", "Avant SetWindowsHookExW keyboard");
     g_hKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardBlockHookProc, GetModuleHandleW(nullptr), 0);

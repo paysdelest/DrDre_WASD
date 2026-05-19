@@ -1,4 +1,4 @@
-﻿// keyboard_ui.cpp
+// keyboard_ui.cpp
 #ifndef _WIN32_IE
 #define _WIN32_IE 0x0600
 #endif
@@ -26,6 +26,10 @@
 
 // NEW: gear animation invalidation
 #include "keyboard_render.h"
+#include "ui_theme.h"
+#include "settings.h"
+#include "free_combo_system.h"
+#include "win_util.h"
 
 // created in keyboard_page_main.cpp
 extern "C" HWND KeyboardPageMain_CreatePage(HWND hParent, HINSTANCE hInst);
@@ -214,4 +218,76 @@ void KeyboardUI_OnTimerTick(HWND)
             InvalidateRect(g_hPageTester, nullptr, FALSE);
         }
     }
+}
+
+
+// ── Mode compact ────────────────────────────────────────────────────────
+// Fonction appelée par app.cpp après création de la fenêtre compacte.
+// Crée les contrôles Remap + WheelCD dans la fenêtre compacte.
+// Les pointeurs de contrôles compacts sont dans keyboard_page_main.cpp
+// On passe par un message custom pour déléguer la création.
+// Approche simplifiée : on stocke les refs ici et on crée les contrôles.
+
+static HWND  s_compactWnd = nullptr;
+static HWND  s_cBtnRemap = nullptr;
+static HWND  s_cBtnWheelCD = nullptr;
+static HWND  s_cEditMs = nullptr;
+
+void KeyboardUI_SetCompactWnd(HWND hCompact, HINSTANCE hInst)
+{
+    s_compactWnd = hCompact;
+    if (!hCompact || !hInst) return;
+
+    UINT dpi = WinUtil_GetSystemDpiCompat();
+    auto SC = [&](int v) { return MulDiv(v, (int)dpi, 96); };
+
+    int pad = SC(8);
+    int bH = SC(26);
+    int eH = SC(22);
+    int W = SC(160); // largeur fenêtre
+    int eW = SC(90);  // edit réduit et centré
+    int eX = (W - SC(90)) / 2 + pad - SC(6);
+    int y = pad;
+
+    // Bouton "Vue complète / Compact" — tout en haut
+    CreateWindowExW(0, L"BUTTON", L"",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        pad, y, W, bH, hCompact, (HMENU)(UINT_PTR)0xF104, hInst, nullptr);
+    y += bH + SC(4);
+
+    // Bouton Remap
+    s_cBtnRemap = CreateWindowExW(0, L"BUTTON", L"",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        pad, y, W, bH, hCompact, (HMENU)(UINT_PTR)0xF101, hInst, nullptr);
+    y += bH + SC(4);
+
+    // Bouton Wheel Cooldown
+    s_cBtnWheelCD = CreateWindowExW(0, L"BUTTON", L"",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        pad, y, W, bH, hCompact, (HMENU)(UINT_PTR)0xF102, hInst, nullptr);
+    y += bH + SC(3);
+
+    // Edit ms — réduit et centré
+    s_cEditMs = CreateWindowExW(0, L"EDIT", L"150",
+        WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+        eX, y, eW, eH, hCompact, (HMENU)(UINT_PTR)0xF103, hInst, nullptr);
+    if (s_cEditMs) {
+        wchar_t buf[16];
+        _itow_s((int)FreeComboSystem::GetWheelCooldownMs(), buf, 16, 10);
+        SetWindowTextW(s_cEditMs, buf);
+    }
+
+    // Ajuster hauteur fenêtre au contenu
+    int totalH = y + eH + pad;
+    // Inclure la barre de titre
+    RECT wr{}; GetWindowRect(hCompact, &wr);
+    RECT cr{}; GetClientRect(hCompact, &cr);
+    int titleH = (wr.bottom - wr.top) - (cr.bottom - cr.top);
+    SetWindowPos(hCompact, nullptr, 0, 0, W + pad * 2, totalH + titleH,
+        SWP_NOMOVE | SWP_NOZORDER); // taille auto depuis totalH
+
+    // Stocker les refs dans keyboard_page_main via message custom
+    // Les boutons utilisent les mêmes IDs (0xF101/0xF102) que la fenêtre principale
+    // → WM_COMMAND sera routé vers la fenêtre principale via GetAncestor(GA_ROOT)
+    // ce qui déclenchera les mêmes handlers que les boutons originaux
 }

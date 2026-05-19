@@ -69,6 +69,21 @@ static RECT  g_mouseViewRect{};
 static HWND  g_hBtnRemapToggle = nullptr;  // F1: bouton toggle remap
 static bool  g_btnRemapHot = false;    // F1: curseur sur le bouton
 static bool  g_btnRemapPressed = false;    // F1: bouton enfoncé
+static HWND  g_hChkWheelCD    = nullptr;
+static HWND  g_hEditWheelCDMs = nullptr;
+static bool  g_wheelCDOn      = false;   // état toggle wheel cooldown
+
+// ── Mode compact ─────────────────────────────────────────
+static HWND  g_hBtnCompact        = nullptr;
+static HWND  g_hCompactWnd        = nullptr;
+static bool  g_isCompactMode      = false;
+static HWND  g_hCBtnRemap         = nullptr;
+static HWND  g_hCBtnWheelCD       = nullptr;
+static HWND  g_hCEditWheelCDMs    = nullptr;
+static constexpr UINT_PTR ID_CBTN_REMAP   = 0xF110;
+static constexpr UINT_PTR ID_CBTN_WHEELCD = 0xF111;
+static constexpr UINT_PTR ID_CEDIT_MS     = 0xF112;
+static constexpr UINT_PTR ID_BTN_COMPACT  = 0xF104;
 static int KeyboardBottomPx(HWND hWnd); // forward declaration
 
 // Previous mouse button state — only invalidate when something changes
@@ -1267,13 +1282,34 @@ static void ResizeSubUi(HWND hWnd)
     const int btnH = S(hWnd, 26);
     const int btnX = (rc.right - rc.left) - btnW - S(hWnd, 12);
     const int btnY = y + S(hWnd, 2);
+
+    // Bouton compact — au-dessus de Remap ON, même largeur
+    if (g_hBtnCompact)
+        SetWindowPos(g_hBtnCompact, HWND_TOP,
+            btnX, btnY - btnH - S(hWnd, 3), btnW, btnH, SWP_NOZORDER);
+
     if (g_hBtnRemapToggle)
         SetWindowPos(g_hBtnRemapToggle, HWND_TOP, btnX, btnY, btnW, btnH, SWP_NOZORDER);
 
-    // Réduire légèrement la largeur du tabcontrol pour ne pas déborder sous le bouton
-    w = btnX - x - S(hWnd, 8);
-    if (w < 10) w = 10;
-    SetWindowPos(g_hSubTab, nullptr, x, y, w, h, SWP_NOZORDER);
+    // Tabcontrol : commence à x
+    const int tabX = x;
+
+    // Wheel cooldown — sous le bouton Remap
+    // Bouton "Wheel Cooldown" pleine largeur (= Remap ON)
+    // Edit ms en dessous, même largeur
+    const int cdH   = S(hWnd, 26);
+    const int cdEdH = S(hWnd, 22);
+    const int cdY   = btnY + btnH + S(hWnd, 4);
+    const int cdEdY = cdY + cdH + S(hWnd, 3);
+    if (g_hChkWheelCD)
+        SetWindowPos(g_hChkWheelCD,    HWND_TOP, btnX, cdY,   btnW, cdH,   SWP_NOZORDER);
+    if (g_hEditWheelCDMs)
+        SetWindowPos(g_hEditWheelCDMs, HWND_TOP, btnX, cdEdY, btnW, cdEdH, SWP_NOZORDER);
+
+    // Tabcontrol : commence après le bouton compact, s'arrête avant Remap ON
+    int tabW = btnX - tabX - S(hWnd, 8);
+    if (tabW < 10) tabW = 10;
+    SetWindowPos(g_hSubTab, nullptr, tabX, y, tabW, h, SWP_NOZORDER);
 
     RECT tabRc{};
     GetClientRect(g_hSubTab, &tabRc);
@@ -2696,6 +2732,33 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         {
             DrawMouseView(hWnd, hdc);
         }
+        // Wheel cooldown edit : effacer le fond autour + label "ms"
+        if (g_hEditWheelCDMs && IsWindowVisible(g_hEditWheelCDMs)) {
+            RECT er{}; GetWindowRect(g_hEditWheelCDMs, &er);
+            MapWindowPoints(nullptr, hWnd, (LPPOINT)&er, 2);
+            // Fond panel autour de l'edit
+            RECT outer = { er.left - S(hWnd,2), er.top - S(hWnd,2),
+                           er.right + S(hWnd,2), er.bottom + S(hWnd,2) };
+            FillRect(hdc, &outer, UiTheme::Brush_PanelBg());
+            // Bordure arrondie de l'edit
+            COLORREF edgC = UiTheme::Color_Border();
+            HPEN ep = CreatePen(PS_SOLID, 1, edgC);
+            HGDIOBJ eop = SelectObject(hdc, ep);
+            HGDIOBJ eob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            int eRad = S(hWnd, 4);
+            RoundRect(hdc, er.left-1, er.top-1, er.right+1, er.bottom+1, eRad*2, eRad*2);
+            SelectObject(hdc, eop); SelectObject(hdc, eob);
+            DeleteObject(ep);
+            // Label "ms" à droite de l'edit
+            HFONT hf2 = (HFONT)SendMessageW(hWnd, WM_GETFONT, 0, 0);
+            if (!hf2) hf2 = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            HGDIOBJ oldF2 = SelectObject(hdc, hf2);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, UiTheme::Color_TextMuted());
+            RECT msRc = { er.right + S(hWnd,4), er.top, er.right + S(hWnd,32), er.bottom };
+            DrawTextW(hdc, L"ms", -1, &msRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(hdc, oldF2);
+        }
         EndPaint(hWnd, &ps);
         return 0;
     }
@@ -2713,12 +2776,37 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         //Ajout<--
         Profile_LoadIni(AppPaths_BindingsIni().c_str());
 
+        // Bouton compact — au-dessus de Remap ON, même style premium
+        g_hBtnCompact = CreateWindowExW(0, L"BUTTON", L"",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            0, 0, 10, 10, hWnd, (HMENU)(UINT_PTR)ID_BTN_COMPACT, hInst, nullptr);
+
         // F1: Bouton toggle remap (visible en permanence au-dessus des onglets)
         g_hBtnRemapToggle = CreateWindowExW(
             0, L"BUTTON", L"",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            0, 0, 10, 10,  // position définie dans ResizeSubUi
+            0, 0, 10, 10,
             hWnd, (HMENU)(UINT_PTR)0xF101, hInst, nullptr);
+
+
+        // Wheel cooldown global
+        g_hChkWheelCD = CreateWindowExW(0, L"BUTTON", L"",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            0, 0, 10, 10, hWnd, (HMENU)(UINT_PTR)0xF102, hInst, nullptr);
+        g_wheelCDOn = FreeComboSystem::GetWheelCooldownEnabled();
+        if (g_hChkWheelCD) {
+            // Dessin via WM_DRAWITEM, état dans g_wheelCDOn
+        }
+        g_hEditWheelCDMs = CreateWindowExW(0, L"EDIT", L"150",
+            WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+            0, 0, 10, 10, hWnd, (HMENU)(UINT_PTR)0xF103, hInst, nullptr);
+        if (g_hEditWheelCDMs) {
+            UiTheme::ApplyToControl(g_hEditWheelCDMs);
+            wchar_t wcBuf[16];
+            _itow_s((int)FreeComboSystem::GetWheelCooldownMs(), wcBuf, 16, 10);
+            SetWindowTextW(g_hEditWheelCDMs, wcBuf);
+            EnableWindow(g_hEditWheelCDMs, g_wheelCDOn);
+        }
 
         RebuildKeyboardButtons(hWnd);
 
@@ -3031,16 +3119,57 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 
 
     case WM_COMMAND:
+        // Bouton compact — basculer mode compact
+        if (LOWORD(wParam) == (WORD)ID_BTN_COMPACT && HIWORD(wParam) == BN_CLICKED)
+        {
+            HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+            if (hRoot) PostMessageW(hRoot, WM_HOTKEY, 0xE5D, 0);
+            g_isCompactMode = !g_isCompactMode;
+            // Invalider pour redessiner avec le bon label
+            if (g_hBtnCompact) InvalidateRect(g_hBtnCompact, nullptr, FALSE);
+            return 0;
+        }
         // F1: clic bouton toggle remap
-        if (LOWORD(wParam) == 0xF101)
+        if ((LOWORD(wParam) == 0xF101 || LOWORD(wParam) == (WORD)ID_CBTN_REMAP)
+            && HIWORD(wParam) == BN_CLICKED)
         {
             Backend_ToggleRemap();
             if (g_hBtnRemapToggle) InvalidateRect(g_hBtnRemapToggle, nullptr, FALSE);
+            if (g_hCompactWnd) InvalidateRect(g_hCompactWnd, nullptr, TRUE);
+            return 0;
+        }
+        // Wheel cooldown toggle
+        if ((LOWORD(wParam) == 0xF102 || LOWORD(wParam) == (WORD)ID_CBTN_WHEELCD)
+            && HIWORD(wParam) == BN_CLICKED)
+        {
+            g_wheelCDOn = !g_wheelCDOn;
+            if (g_hChkWheelCD) InvalidateRect(g_hChkWheelCD, nullptr, FALSE);
+            if (g_hCompactWnd) InvalidateRect(g_hCompactWnd, nullptr, TRUE);
+            if (g_hEditWheelCDMs) EnableWindow(g_hEditWheelCDMs, g_wheelCDOn);
+            wchar_t wcBuf[16] = {};
+            if (g_hEditWheelCDMs) GetWindowTextW(g_hEditWheelCDMs, wcBuf, 16);
+            int ms = _wtoi(wcBuf); if (ms < 20 || ms > 5000) ms = 150;
+            FreeComboSystem::SetWheelCooldown(g_wheelCDOn, (uint32_t)ms);
+            { std::wstring p = WinUtil_BuildPathNearExe(L"free_combos.dat"); FreeComboSystem::SaveToFile(p.c_str()); }
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return 0;
+        }
+        // Wheel cooldown edit
+        if (LOWORD(wParam) == 0xF103 && HIWORD(wParam) == EN_KILLFOCUS)
+        {
+            wchar_t wcBuf[16] = {};
+            if (g_hEditWheelCDMs) GetWindowTextW(g_hEditWheelCDMs, wcBuf, 16);
+            int ms = _wtoi(wcBuf); if (ms < 20 || ms > 5000) ms = 150;
+            FreeComboSystem::SetWheelCooldown(g_wheelCDOn, (uint32_t)ms);
+            { std::wstring p = WinUtil_BuildPathNearExe(L"free_combos.dat"); FreeComboSystem::SaveToFile(p.c_str()); }
             return 0;
         }
         if (HIWORD(wParam) == BN_CLICKED)
         {
             HWND btn = (HWND)lParam;
+            // Exclure nos boutons premium (wheel cooldown, remap toggle)
+            if (btn && btn == g_hChkWheelCD) return 0; // déjà géré au-dessus
+            if (btn && btn == g_hBtnRemapToggle) return 0;
             if (btn && GetParent(btn) == hWnd)
             {
                 // Selection works only in Configuration tab
@@ -3088,11 +3217,156 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         break;
     }
 
+    case WM_CTLCOLOREDIT:
+        if ((HWND)lParam == g_hEditWheelCDMs) {
+            HDC hdc = (HDC)wParam;
+            SetBkColor(hdc, UiTheme::Color_ControlBg());
+            SetTextColor(hdc, UiTheme::Color_Text());
+            static HBRUSH s_wcdBrush = nullptr;
+            if (!s_wcdBrush) s_wcdBrush = CreateSolidBrush(UiTheme::Color_ControlBg());
+            return (LRESULT)s_wcdBrush;
+        }
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+
     case WM_DRAWITEM:
     {
         const DRAWITEMSTRUCT* dis = (const DRAWITEMSTRUCT*)lParam;
         if (dis && dis->CtlType == ODT_BUTTON)
         {
+            // Bouton compact — ▣ Compact view / ▣ Vue complète
+            if (dis->hwndItem == g_hBtnCompact)
+            {
+                HDC hdc = dis->hDC;
+                RECT rc  = dis->rcItem;
+                bool down = (dis->itemState & ODS_SELECTED) != 0;
+                // Fond
+                COLORREF bg = UiTheme::Color_ControlBg();
+                if (down) bg = RGB(std::min(255,GetRValue(bg)+18),
+                                  std::min(255,GetGValue(bg)+18),
+                                  std::min(255,GetBValue(bg)+18));
+                HBRUSH hbr=CreateSolidBrush(bg); FillRect(hdc,&rc,hbr); DeleteObject(hbr);
+                // Bordure arrondie fine (accent si mode compact actif)
+                COLORREF bc = g_isCompactMode ? UiTheme::Color_Accent() : UiTheme::Color_Border();
+                HPEN hp=CreatePen(PS_SOLID, g_isCompactMode?2:1, bc);
+                HGDIOBJ op=SelectObject(hdc,hp), ob=SelectObject(hdc,GetStockObject(NULL_BRUSH));
+                int rad = S(hWnd,5);
+                RoundRect(hdc,rc.left,rc.top,rc.right,rc.bottom,rad*2,rad*2);
+                SelectObject(hdc,op); SelectObject(hdc,ob); DeleteObject(hp);
+                // Icône ▣ (petite, à gauche)
+                int dotCx = rc.left + S(hWnd,12);
+                int dotCy = (rc.top+rc.bottom)/2;
+                HFONT hf=(HFONT)SendMessageW(hWnd,WM_GETFONT,0,0);
+                if(!hf) hf=(HFONT)GetStockObject(DEFAULT_GUI_FONT);
+                HGDIOBJ oldF=SelectObject(hdc,hf);
+                SetBkMode(hdc,TRANSPARENT);
+                SetTextColor(hdc, g_isCompactMode ? UiTheme::Color_Accent() : UiTheme::Color_TextMuted());
+                RECT iconRc={rc.left+S(hWnd,4), rc.top, rc.left+S(hWnd,22), rc.bottom};
+                DrawTextW(hdc,L"\u25A3",-1,&iconRc,
+                    DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+                // Texte
+                SetTextColor(hdc, UiTheme::Color_TextMuted());
+                RECT rt={rc.left+S(hWnd,22), rc.top, rc.right-S(hWnd,4), rc.bottom};
+                const wchar_t* lbl = g_isCompactMode ? L"Vue compl\u00E8te" : L"Compact view";
+                DrawTextW(hdc,lbl,-1,&rt,
+                    DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+                SelectObject(hdc,oldF);
+                return TRUE;
+            }
+            // Wheel cooldown toggle — dessin premium
+            if (dis->hwndItem == g_hChkWheelCD)
+            {
+                HDC  hdc  = dis->hDC;
+                RECT rc   = dis->rcItem;
+                bool on   = g_wheelCDOn;
+                bool down = (dis->itemState & ODS_SELECTED) != 0;
+
+                // Fond
+                COLORREF bgBase = UiTheme::Color_ControlBg();
+                COLORREF bgHot  = RGB(
+                    std::min(255, GetRValue(bgBase) + 14),
+                    std::min(255, GetGValue(bgBase) + 14),
+                    std::min(255, GetBValue(bgBase) + 14));
+                HBRUSH hbr = CreateSolidBrush(down ? bgHot : bgBase);
+                FillRect(hdc, &rc, hbr);
+                DeleteObject(hbr);
+
+                // Bordure arrondie — accent si ON, border si OFF
+                int rad = S(hWnd, 4);
+                COLORREF borderC = on ? UiTheme::Color_Accent() : UiTheme::Color_Border();
+                HPEN hp = CreatePen(PS_SOLID, on ? 2 : 1, borderC);
+                HGDIOBJ op = SelectObject(hdc, hp);
+                HGDIOBJ ob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, rad*2, rad*2);
+                SelectObject(hdc, op); SelectObject(hdc, ob);
+                DeleteObject(hp);
+
+                // Pastille
+                int dotR  = S(hWnd, 4);
+                int dotCx = rc.left + S(hWnd, 10);
+                int dotCy = (rc.top + rc.bottom) / 2;
+                COLORREF dotC = on ? UiTheme::Color_Accent() : UiTheme::Color_TextMuted();
+                HBRUSH db = CreateSolidBrush(dotC);
+                HPEN   dp = CreatePen(PS_SOLID, 1, dotC);
+                SelectObject(hdc, db); SelectObject(hdc, dp);
+                Ellipse(hdc, dotCx-dotR, dotCy-dotR, dotCx+dotR, dotCy+dotR);
+                DeleteObject(db); DeleteObject(dp);
+
+                // Texte "Wheel CD"
+                HFONT hf = (HFONT)SendMessageW(hWnd, WM_GETFONT, 0, 0);
+                if (!hf) hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+                HGDIOBJ oldF = SelectObject(hdc, hf);
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, on ? UiTheme::Color_Text() : UiTheme::Color_TextMuted());
+                RECT rcT = { dotCx + dotR + S(hWnd,5), rc.top, rc.right - S(hWnd,3), rc.bottom };
+                DrawTextW(hdc, L"Wheel Cooldown", -1, &rcT,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                SelectObject(hdc, oldF);
+                return TRUE;
+            }
+
+            // Compact : Remap toggle
+            if (dis->hwndItem == g_hCBtnRemap)
+            {
+                HDC hdc=dis->hDC; RECT rc=dis->rcItem;
+                bool on=Backend_GetRemapEnabled();
+                HBRUSH hbr=CreateSolidBrush(UiTheme::Color_ControlBg()); FillRect(hdc,&rc,hbr); DeleteObject(hbr);
+                COLORREF bc=on?UiTheme::Color_Accent():UiTheme::Color_Border();
+                HPEN hp=CreatePen(PS_SOLID,on?2:1,bc); HGDIOBJ op=SelectObject(hdc,hp),ob=SelectObject(hdc,GetStockObject(NULL_BRUSH));
+                RoundRect(hdc,rc.left,rc.top,rc.right,rc.bottom,10,10);
+                SelectObject(hdc,op); SelectObject(hdc,ob); DeleteObject(hp);
+                int dR=S(hWnd,4),dCx=rc.left+S(hWnd,10),dCy=(rc.top+rc.bottom)/2;
+                COLORREF dc=on?UiTheme::Color_Accent():UiTheme::Color_TextMuted();
+                HBRUSH db=CreateSolidBrush(dc); HPEN dp=CreatePen(PS_SOLID,1,dc);
+                SelectObject(hdc,db); SelectObject(hdc,dp);
+                Ellipse(hdc,dCx-dR,dCy-dR,dCx+dR,dCy+dR); DeleteObject(db); DeleteObject(dp);
+                HFONT hf=(HFONT)SendMessageW(hWnd,WM_GETFONT,0,0); if(!hf) hf=(HFONT)GetStockObject(DEFAULT_GUI_FONT);
+                HGDIOBJ oldF=SelectObject(hdc,hf); SetBkMode(hdc,TRANSPARENT);
+                SetTextColor(hdc,on?UiTheme::Color_Text():UiTheme::Color_TextMuted());
+                RECT rt={dCx+dR+S(hWnd,5),rc.top,rc.right-S(hWnd,3),rc.bottom};
+                DrawTextW(hdc,on?L"Remap  ON":L"Remap  OFF",-1,&rt,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+                SelectObject(hdc,oldF); return TRUE;
+            }
+            // Compact : Wheel CD toggle
+            if (dis->hwndItem == g_hCBtnWheelCD)
+            {
+                HDC hdc=dis->hDC; RECT rc=dis->rcItem;
+                HBRUSH hbr=CreateSolidBrush(UiTheme::Color_ControlBg()); FillRect(hdc,&rc,hbr); DeleteObject(hbr);
+                COLORREF bc=g_wheelCDOn?UiTheme::Color_Accent():UiTheme::Color_Border();
+                HPEN hp=CreatePen(PS_SOLID,g_wheelCDOn?2:1,bc); HGDIOBJ op=SelectObject(hdc,hp),ob=SelectObject(hdc,GetStockObject(NULL_BRUSH));
+                RoundRect(hdc,rc.left,rc.top,rc.right,rc.bottom,10,10);
+                SelectObject(hdc,op); SelectObject(hdc,ob); DeleteObject(hp);
+                int dR=S(hWnd,4),dCx=rc.left+S(hWnd,10),dCy=(rc.top+rc.bottom)/2;
+                COLORREF dc=g_wheelCDOn?UiTheme::Color_Accent():UiTheme::Color_TextMuted();
+                HBRUSH db=CreateSolidBrush(dc); HPEN dp=CreatePen(PS_SOLID,1,dc);
+                SelectObject(hdc,db); SelectObject(hdc,dp);
+                Ellipse(hdc,dCx-dR,dCy-dR,dCx+dR,dCy+dR); DeleteObject(db); DeleteObject(dp);
+                HFONT hf=(HFONT)SendMessageW(hWnd,WM_GETFONT,0,0); if(!hf) hf=(HFONT)GetStockObject(DEFAULT_GUI_FONT);
+                HGDIOBJ oldF=SelectObject(hdc,hf); SetBkMode(hdc,TRANSPARENT);
+                SetTextColor(hdc,g_wheelCDOn?UiTheme::Color_Text():UiTheme::Color_TextMuted());
+                RECT rt={dCx+dR+S(hWnd,5),rc.top,rc.right-S(hWnd,3),rc.bottom};
+                DrawTextW(hdc,L"Wheel Cooldown",-1,&rt,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+                SelectObject(hdc,oldF); return TRUE;
+            }
             // F1: Bouton Remap Toggle — dessin premium
             if (dis->hwndItem == g_hBtnRemapToggle)
             {
@@ -3234,6 +3508,11 @@ static LRESULT CALLBACK PageMainProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
     }
 
     return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+extern "C" void KeyboardPageMain_SetCompactWnd(HWND hCompact)
+{
+    g_hCompactWnd = hCompact;
 }
 
 extern "C" HWND KeyboardPageMain_CreatePage(HWND hParent, HINSTANCE hInst)

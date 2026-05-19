@@ -133,6 +133,11 @@ namespace {
     std::vector<std::wstring> g_whitelist;
     std::mutex                g_wlMutex;
 
+    // ── Wheel Cooldown global ─────────────────────────────────
+    std::atomic<bool>     g_wheelCDEnabled{ false };
+    std::atomic<uint32_t> g_wheelCDMs{ 150 };
+    DWORD                 g_wheelCDLastFire = 0; // dernier tir molette (tous combos)
+
     // Trigger CAPTURE
     std::atomic<bool>   g_capturing = false;
     std::atomic<bool>   g_CAPTUREComplete = false;
@@ -888,6 +893,17 @@ namespace FreeComboSystem
                 combo._lpFired          = false;
                 break;
             }
+            // Wheel cooldown global : ignorer les doublons molette
+            if (g_wheelCDEnabled.load(std::memory_order_relaxed) &&
+                (combo.trigger.keyType == FreeTriggerKeyType::WheelUp ||
+                 combo.trigger.keyType == FreeTriggerKeyType::WheelDown))
+            {
+                DWORD now2 = GetTickCount();
+                uint32_t cdMs = g_wheelCDMs.load(std::memory_order_relaxed);
+                if (now2 - g_wheelCDLastFire < cdMs)
+                    break; // trop tôt — ignorer
+                g_wheelCDLastFire = now2;
+            }
             FireCombo(combo);
             break; // Prioritize latest combo and avoid double-fire (e.g. P then G).
         }
@@ -1146,6 +1162,38 @@ namespace FreeComboSystem
             g_whitelist.end());
     }
 
+    // ── Wheel Cooldown global API ────────────────────────────
+    void SetWheelCooldown(bool enabled, uint32_t ms)
+    {
+        g_wheelCDEnabled.store(enabled, std::memory_order_relaxed);
+        g_wheelCDMs.store(ms > 0 ? ms : 150, std::memory_order_relaxed);
+    }
+    bool GetWheelCooldownEnabled()
+    {
+        return g_wheelCDEnabled.load(std::memory_order_relaxed);
+    }
+    uint32_t GetWheelCooldownMs()
+    {
+        return g_wheelCDMs.load(std::memory_order_relaxed);
+    }
+
+    // Appelé depuis MouseHookProc dans app.cpp
+    // false = bloquer cet événement molette
+    // Logique : cooldown actif + (WATCHMAN OFF → toujours | WATCHMAN ON → seulement si app listée)
+    bool IsWheelEventAllowed()
+    {
+        if (!g_wheelCDEnabled.load(std::memory_order_relaxed)) return true;
+        // Si WATCHMAN actif : ne bloquer QUE dans les apps listées
+        int wlMode = g_wlMode.load(std::memory_order_relaxed);
+        if (wlMode != 0 && !InjectionAllowed()) return true; // app non listée → laisser passer
+        // Appliquer le cooldown
+        DWORD now = GetTickCount();
+        uint32_t cdMs = g_wheelCDMs.load(std::memory_order_relaxed);
+        if (now - g_wheelCDLastFire < cdMs) return false; // trop tôt → bloquer
+        g_wheelCDLastFire = now;
+        return true;
+    }
+
     bool SaveToFile(const wchar_t* path)
     {
         std::lock_guard<std::mutex> lock(g_comboMutex);
@@ -1155,6 +1203,9 @@ namespace FreeComboSystem
         fwprintf(f, L"DRDRE_FREECOMBOS_V5\n");
         // Whitelist config
         fwprintf(f, L"WL_MODE %d\n", g_wlMode.load(std::memory_order_relaxed));
+        fwprintf(f, L"WHEEL_CD %d %u\n",
+            g_wheelCDEnabled.load(std::memory_order_relaxed) ? 1 : 0,
+            g_wheelCDMs.load(std::memory_order_relaxed));
         {
             std::lock_guard<std::mutex> wlLk(g_wlMutex);
             fwprintf(f, L"WL_COUNT %u\n", (unsigned)g_whitelist.size());
@@ -1172,13 +1223,15 @@ namespace FreeComboSystem
                 (int)combo.trigger.holdKeyType,
                 (int)combo.trigger.holdVkCode,
                 combo.trigger.keyTypeIsHold ? 1 : 0);
-            fwprintf(f, L"%d %d %d %d %u %d\n",
+            fwprintf(f, L"%d %d %d %d %u %d %d %u\n",
                 combo.enabled ? 1 : 0,
                 combo.repeatWhileHeld ? 1 : 0,
                 combo.repeatDelayMs,
                 combo.isExample ? 1 : 0,
                 combo.repeatCount,
-                combo.cancelOnRelease ? 1 : 0);
+                combo.cancelOnRelease ? 1 : 0,
+                combo.longPressEnabled ? 1 : 0,
+                combo.longPressMs);
             fwprintf(f, L"%u\n", (unsigned)combo.actions.size());
             for (const auto& action : combo.actions) {
                 std::wstring textLine = action.text;
@@ -1220,7 +1273,31 @@ namespace FreeComboSystem
                 if (swscanf_s(wlLine.c_str(), L"WL_MODE %d", &wlm) == 1)
                     g_wlMode.store(wlm, std::memory_order_relaxed);
             }
+            // Wheel cooldown global (optionnel — compat anciens fichiers)
+            bool wlAlreadyRead = false;
             if (ReadLine(f, wlLine)) {
+                int wce = 0; unsigned wcms = 150;
+                if (swscanf_s(wlLine.c_str(), L"WHEEL_CD %d %u", &wce, &wcms) == 2) {
+                    // Nouveau format : ligne WHEEL_CD présente
+                    g_wheelCDEnabled.store(wce != 0, std::memory_order_relaxed);
+                    g_wheelCDMs.store(wcms > 0 ? wcms : 150, std::memory_order_relaxed);
+                } else {
+                    // Ancien format : pas de WHEEL_CD, cette ligne = WL_COUNT
+                    unsigned wlCount2 = 0;
+                    if (swscanf_s(wlLine.c_str(), L"WL_COUNT %u", &wlCount2) == 1) {
+                        std::lock_guard<std::mutex> wlLk2(g_wlMutex);
+                        g_whitelist.clear();
+                        for (unsigned wi = 0; wi < wlCount2; ++wi) {
+                            std::wstring entry;
+                            if (!ReadLine(f, entry)) break;
+                            if (entry.size() > 9 && entry.substr(0, 9) == L"WL_ENTRY ")
+                                g_whitelist.push_back(entry.substr(9));
+                        }
+                        wlAlreadyRead = true;
+                    }
+                }
+            }
+            if (!wlAlreadyRead && ReadLine(f, wlLine)) {
                 unsigned wlCount = 0;
                 if (swscanf_s(wlLine.c_str(), L"WL_COUNT %u", &wlCount) == 1) {
                     std::lock_guard<std::mutex> wlLk(g_wlMutex);
@@ -1267,9 +1344,11 @@ namespace FreeComboSystem
             combo.trigger.holdVkCode    = (WORD)holdVk;
             combo.trigger.keyTypeIsHold = (keyTypeIsHoldInt != 0);
 
-            int en = 0, rep = 0, del = 0, isEx = 0; unsigned rcount = 0; int crel = 0;
+            int en = 0, rep = 0, del = 0, isEx = 0; unsigned rcount = 0;
+            int crel = 0, lp = 0; unsigned lpms = 300;
             if (!ReadLine(f, line)) { parseOk = false; break; }
-            if (isV4) swscanf_s(line.c_str(), L"%d %d %d %d %u %d", &en, &rep, &del, &isEx, &rcount, &crel);
+            if (isV4) swscanf_s(line.c_str(), L"%d %d %d %d %u %d %d %u",
+                &en, &rep, &del, &isEx, &rcount, &crel, &lp, &lpms);
             else      swscanf_s(line.c_str(), L"%d %d %d %d", &en, &rep, &del, &isEx);
             combo.enabled = (en != 0);
             combo.repeatWhileHeld = (rep != 0);
@@ -1277,6 +1356,8 @@ namespace FreeComboSystem
             combo.isExample = (isEx != 0);
             combo.repeatCount = rcount;
             combo.cancelOnRelease = (crel != 0);
+            combo.longPressEnabled = (lp != 0);
+            combo.longPressMs = (lpms > 0) ? lpms : 300;
 
             unsigned actionCountU = 0;
             if (!ReadLine(f, line) || swscanf_s(line.c_str(), L"%u", &actionCountU) != 1)

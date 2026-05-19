@@ -33,6 +33,11 @@
 #pragma comment(lib, "setupapi.lib")
 
 // ---------------------------------------------------------------
+// FIX WASD lock: forward declaration — resets g_hookKeyDown in app.cpp.
+// Called on Wooting restart so any key stuck mid-press during the ~50ms
+// uninit window gets cleared before Windows sees the next keypress.
+extern void App_ResetHookKeyDown();
+
 // FIX : mutex global protégeant TOUS les appels à abiv1.dll
 // wooting_analog_read_analog() n'est pas thread-safe et crashe
 // après plusieurs heures d'appels depuis le RealtimeLoop.
@@ -752,13 +757,18 @@ void Backend_Tick()
             (now - g_wootingLastInitMs) >= kWootingRestartIntervalMs)
         {
             OutputDebugStringA("WOOTING_RESTART: Redémarrage périodique de abiv1.dll (timer 2h)\n");
+            // FIX WASD lock: reset hook key state BEFORE uninit so any key held
+            // during the restart window is cleared and won't stay stuck in the hook.
+            App_ResetHookKeyDown();
             {
                 std::lock_guard<std::mutex> lock(g_wootingMutex);
                 wooting_analog_uninitialise();
-                // Petite pause pour laisser les threads internes de la DLL se terminer
-                Sleep(150);
+                // Reduced 150ms → 50ms: fewer missed HID reports at 8000Hz
+                Sleep(50);
                 wooting_analog_initialise();
             }
+            // FIX WASD lock: reset again after reinit for any residual state
+            App_ResetHookKeyDown();
             g_wootingLastInitMs = GetTickCount64();
             OutputDebugStringA("WOOTING_RESTART: Redémarrage OK\n");
         }
@@ -1013,6 +1023,14 @@ BackendStatus Backend_GetStatus()
 
 void Backend_NotifyDeviceChange()
 {
+    // FIX WASD lock: reset g_hookKeyDown on ANY USB device change (connect OR
+    // disconnect). When the NuPhy is unplugged mid-keypress, the physical KEYUP
+    // is never sent to the hook → g_hookKeyDown[vk] stays true indefinitely →
+    // every subsequent keypress is silently blocked by the hook even after USB
+    // reconnect. Resetting here clears the stale state the moment Windows
+    // detects the device change, before any new keypresses can arrive.
+    App_ResetHookKeyDown();
+
     if (!g_virtualPadsEnabled.load(std::memory_order_acquire)) return;
     if (g_vigemOk.load(std::memory_order_acquire)) return;
     ULONGLONG now = GetTickCount64();

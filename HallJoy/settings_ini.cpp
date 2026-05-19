@@ -338,6 +338,10 @@ bool SettingsIni_Load(const wchar_t* path)
     Settings_SetMainWindowHeightPx(winH);
     Settings_SetMainWindowPosXPx(winX);
     Settings_SetMainWindowPosYPx(winY);
+    Settings_SetCompactWinPosXPx(IniReadI32(L"CompactWindow", L"PosX",
+        std::numeric_limits<int>::min(), path));
+    Settings_SetCompactWinPosYPx(IniReadI32(L"CompactWindow", L"PosY",
+        std::numeric_limits<int>::min(), path));
 
     KeySettingsIni_LoadFromSettingsIni(path);
     KeyboardLayout_LoadFromIni(path);
@@ -390,6 +394,13 @@ static bool SettingsIni_Save_Internal(const wchar_t* tmpPath)
         WritePrivateProfileStringW(L"Window", L"PosY", nullptr, tmpPath);
     else
         IniWriteI32(L"Window", L"PosY", winY, tmpPath);
+    // Compact window position
+    const int cWinX = Settings_GetCompactWinPosXPx();
+    const int cWinY = Settings_GetCompactWinPosYPx();
+    if (cWinX != std::numeric_limits<int>::min())
+        IniWriteI32(L"CompactWindow", L"PosX", cWinX, tmpPath);
+    if (cWinY != std::numeric_limits<int>::min())
+        IniWriteI32(L"CompactWindow", L"PosY", cWinY, tmpPath);
 
     KeySettingsIni_SaveToSettingsIni(tmpPath);
     KeyboardLayout_SaveToIni(tmpPath);

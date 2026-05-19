@@ -10,6 +10,7 @@ bool KeyboardUI_HasHid(uint16_t hid);
 
 // NEW: Remap panel tells keyboard UI which key is currently hovered as drop target
 void KeyboardUI_SetDragHoverHid(uint16_t hid); // 0 = none
+void KeyboardUI_SetCompactWnd(HWND hCompact, HINSTANCE hInst); // init fenêtre compacte
 
 // External declarations for subpages
 extern HWND g_hPageFreeCombo;

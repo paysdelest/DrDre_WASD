@@ -3,3 +3,4 @@
 #include <windows.h>
 
 int App_Run(HINSTANCE hInst, int nCmdShow);
+void App_ResetHookKeyDown();

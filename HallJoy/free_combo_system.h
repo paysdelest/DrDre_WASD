@@ -75,6 +75,9 @@ struct FreeCombo
     DWORD    _lpPressStartTime = 0;
     bool     _lpWaiting        = false;
     bool     _lpFired          = false;
+
+    // State interne wheel — non sérialisé
+    DWORD    _lastWheelFireTime = 0;
 };
 
 // Free combo management system
@@ -141,6 +144,14 @@ namespace FreeComboSystem
     std::vector<std::wstring> GetWhitelist();
     void AddToWhitelist(const std::wstring& exeName);          // ex: L"cs2.exe"
     void RemoveFromWhitelist(const std::wstring& exeName);
+
+    // ── Wheel Cooldown global ────────────────────────────────
+    void SetWheelCooldown(bool enabled, uint32_t ms);
+    bool     GetWheelCooldownEnabled();
+    uint32_t GetWheelCooldownMs();
+    // Hook bas niveau : true = laisser passer, false = bloquer
+    // Vérifie cooldown ET WATCHMAN (ne bloque que si app en whitelist)
+    bool IsWheelEventAllowed();
 
     // Save / Load
     bool SaveToFile(const wchar_t* path);

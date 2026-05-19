@@ -266,6 +266,7 @@ static HWND g_hChkCancelRel    = nullptr;  // Cancel on release
 static HWND g_hEditRepeatCount = nullptr;  // Run N times (0=inf)
 static HWND g_hChkLongPress    = nullptr;  // Long press enable
 static HWND g_hEditLongPressMs = nullptr;  // Long press duration (ms)
+
 static HWND g_hEditDelay = nullptr;
 static HWND g_hDelaySlider = nullptr;
 static HWND g_hDelayValue = nullptr;
@@ -1173,6 +1174,7 @@ static void UpdateControlsEnabled()
     if (g_hEditLongPressMs) EnableWindow(g_hEditLongPressMs,
         has && g_hChkLongPress &&
         SendMessageW(g_hChkLongPress, BM_GETCHECK, 0, 0) == BST_CHECKED);
+
     En(g_hActionList);  En(g_hActionTypeCB); En(g_hActionKeyEdt);
     En(g_hBtnAdd);      En(g_hBtnAddDelay);  En(g_hBtnDelAct);
     En(g_hBtnUp);       En(g_hBtnDown);      En(g_hBtnSave);
@@ -1570,7 +1572,9 @@ namespace FreeComboUI
                 lx, wy, lw, 200, g_hPage, (HMENU)ID_WL_MODE_CB, hInst, nullptr);
             SendMessageW(g_hWlModeCB, CB_ADDSTRING, 0, (LPARAM)L"OFF  -  Inject everywhere");
             SendMessageW(g_hWlModeCB, CB_ADDSTRING, 0, (LPARAM)L"WHITELIST  -  Allowed apps only");
-            SendMessageW(g_hWlModeCB, CB_SETCURSEL, 0, 0);
+            // Restaurer le mode sauvegardé (0=OFF, 1=Whitelist)
+            SendMessageW(g_hWlModeCB, CB_SETCURSEL,
+                (WPARAM)FreeComboSystem::GetWhitelistMode(), 0);
             UiTheme::ApplyToControl(g_hWlModeCB);
             if (HFONT f = GetFont(g_hPage))
                 SendMessageW(g_hWlModeCB, WM_SETFONT, (WPARAM)f, FALSE);
@@ -1660,6 +1664,7 @@ namespace FreeComboUI
                 rx + 144, ry, 52, rowH, g_hPage, (HMENU)ID_EDIT_LONG_PRESS_MS, hInst, nullptr);
             EnableWindow(g_hEditLongPressMs, FALSE); // grisé par défaut
         }
+
 
         // Ligne 3 : [Repeat delay: label] [edit 52px ms]
         {

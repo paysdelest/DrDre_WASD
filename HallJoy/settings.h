@@ -120,3 +120,9 @@ int Settings_GetMainWindowPosXPx();
 
 void Settings_SetMainWindowPosYPx(int px);
 int Settings_GetMainWindowPosYPx();
+
+// ── Compact window position ──────────────────────────────
+void Settings_SetCompactWinPosXPx(int px);
+int  Settings_GetCompactWinPosXPx();
+void Settings_SetCompactWinPosYPx(int px);
+int  Settings_GetCompactWinPosYPx();

@@ -35,6 +35,8 @@ static std::atomic<int> g_mainWinW{ 821 };
 static std::atomic<int> g_mainWinH{ 832 };
 static std::atomic<int> g_mainWinX{ std::numeric_limits<int>::min() };
 static std::atomic<int> g_mainWinY{ std::numeric_limits<int>::min() };
+static std::atomic<int> g_compactWinX{ std::numeric_limits<int>::min() };
+static std::atomic<int> g_compactWinY{ std::numeric_limits<int>::min() };
 
 // Global curve endpoints (Y)
 static std::atomic<int> g_globalAntiDzM{ 0 };
@@ -426,3 +428,8 @@ int Settings_GetMainWindowPosYPx()
 {
     return g_mainWinY.load(std::memory_order_acquire);
 }
+
+void Settings_SetCompactWinPosXPx(int px) { g_compactWinX.store(px, std::memory_order_relaxed); }
+int  Settings_GetCompactWinPosXPx()       { return g_compactWinX.load(std::memory_order_relaxed); }
+void Settings_SetCompactWinPosYPx(int px) { g_compactWinY.store(px, std::memory_order_relaxed); }
+int  Settings_GetCompactWinPosYPx()       { return g_compactWinY.load(std::memory_order_relaxed); }
